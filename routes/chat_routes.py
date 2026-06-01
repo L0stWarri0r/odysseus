@@ -35,6 +35,7 @@ from routes.chat_helpers import (
     clean_thinking_for_save,
     _enforce_chat_privileges,
 )
+from src.hermes_control.chat_integration import _apply_hermes_control_policy
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,23 @@ def setup_chat_routes(
         # non-streaming path can't be used to bypass).
         _enforce_chat_privileges(request, sess)
 
+        # Hermes Control enforcement must happen before memory commands,
+        # research, context building, or any LLM/token work. In private+local
+        # mode the policy layer keeps message content opaque and only applies
+        # metadata-level route/tool adjustments.
+        _hpol = _apply_hermes_control_policy(
+            message=message,
+            session_id=session,
+            sess=sess,
+            mode="chat",
+            private_mode=chat_request.private_mode,
+            use_web=use_web,
+            use_research=use_research,
+            allow_web_search=False,
+        )
+        use_web = _hpol.use_web
+        use_research = _hpol.use_research
+
         # Inline memory command
         memory_response = await chat_handler.handle_memory_command(sess, message)
         if memory_response:
@@ -269,6 +287,7 @@ def setup_chat_routes(
         search_context = form_data.get("search_context")  # pre-fetched web search results (compare mode)
         compare_mode = str(form_data.get("compare_mode", "")).lower() == "true"
         incognito = str(form_data.get("incognito", "")).lower() == "true"
+        private_mode = str(form_data.get("private_mode", "")).lower() == "true"
         chat_mode = str(form_data.get("mode", "")).lower()  # 'chat' or 'agent'
         # Did the USER explicitly pick agent mode? (vs. us auto-escalating
         # below). Skill extraction should only learn from real agent sessions,
@@ -323,9 +342,27 @@ def setup_chat_routes(
         # Ensure session has auth headers
         resolve_session_auth(sess, session)
 
+        # Hermes Control enforcement must happen before research, context
+        # building, agent tools, or any LLM/token work. Private+local mode is
+        # intentionally opaque: the policy layer does not inspect prompt text
+        # and only disables web/research metadata routes.
+        _hpol = _apply_hermes_control_policy(
+            message=message,
+            session_id=session,
+            sess=sess,
+            mode=chat_mode or "chat",
+            private_mode=private_mode,
+            use_web=use_web,
+            use_research=use_research,
+            allow_web_search=allow_web_search,
+        )
+        use_web = _hpol.use_web
+        use_research = _hpol.use_research
+        allow_web_search = _hpol.allow_web_search
+
         # Check for research_pending BEFORE mode persist overwrites it
         do_research = str(use_research).lower() == "true"
-        if not do_research:
+        if not do_research and "disable_research" not in _hpol.actions:
             try:
                 _mode_db = SessionLocal()
                 _db_mode = _mode_db.query(DBSession.mode).filter(DBSession.id == session).scalar()
