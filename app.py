@@ -448,8 +448,13 @@ app.include_router(setup_memory_routes(memory_manager, session_manager, memory_v
 from routes.skills_routes import setup_skills_routes
 app.include_router(setup_skills_routes(skills_manager))
 
+# Hermes Control (Lost Warrior edition policy/preflight layer)
+from routes.hermes_routes import setup_hermes_routes
+app.include_router(setup_hermes_routes())
+
 # Chat
 from routes.chat_routes import setup_chat_routes
+
 app.include_router(setup_chat_routes(
     session_manager, chat_handler, chat_processor,
     memory_manager, research_handler, upload_handler,
