@@ -58,6 +58,99 @@ function relativeTime(timestamp) {
   return `${Math.floor(diff / 31536000)}y ago`;
 }
 
+function formatInt(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n.toLocaleString() : '0';
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
+}
+
+function formatCountMap(map) {
+  const entries = Object.entries(map || {});
+  if (!entries.length) return 'none';
+  return entries.map(([key, count]) => `${escapeHtml(key)}: ${formatInt(count)}`).join(' · ');
+}
+
+function continuityMetric(label, value, sub = '') {
+  return `<div style="border:1px solid var(--border);border-radius:8px;padding:8px;background:color-mix(in srgb,var(--fg) 3%,transparent);">
+    <div style="font-size:10px;letter-spacing:.04em;text-transform:uppercase;opacity:.55">${escapeHtml(label)}</div>
+    <div style="font-size:20px;font-weight:700;line-height:1.2;margin-top:2px;font-variant-numeric:tabular-nums">${escapeHtml(String(value))}</div>
+    ${sub ? `<div style="font-size:10px;opacity:.55;margin-top:2px">${escapeHtml(sub)}</div>` : ''}
+  </div>`;
+}
+
+function renderHermesContinuityInventory(inventory) {
+  const status = document.getElementById('hermes-continuity-status');
+  const summary = document.getElementById('hermes-continuity-summary');
+  const detail = document.getElementById('hermes-continuity-detail');
+  if (!status || !summary || !detail) return;
+
+  const state = inventory?.state_db || {};
+  status.textContent = inventory?.exists
+    ? `Hermes home found: ${inventory.hermes_home || 'unknown'}`
+    : `Hermes home not found: ${inventory?.hermes_home || 'unknown'}`;
+
+  summary.innerHTML = [
+    continuityMetric('sessions', formatInt(state.session_count)),
+    continuityMetric('messages', formatInt(state.message_count)),
+    continuityMetric('profile notes', formatInt(inventory?.profile_markdown_count)),
+    continuityMetric('skills', formatInt(inventory?.skill_count)),
+    continuityMetric('state DB', state.exists ? formatBytes(state.size_bytes) : 'missing'),
+    continuityMetric('contents', inventory?.content_returned ? 'visible' : 'hidden', 'read-only scan'),
+  ].join('');
+
+  const memoryFiles = (inventory?.memory_files || [])
+    .map(file => `${escapeHtml(file.name)} ${file.exists ? `(${formatBytes(file.size_bytes)})` : '(missing)'}`)
+    .join(' · ') || 'none';
+  const warnings = (inventory?.privacy_warnings || [])
+    .map(w => `<li>${escapeHtml(w)}</li>`)
+    .join('');
+
+  detail.innerHTML = `
+    <div><strong>Sources:</strong> ${formatCountMap(state.source_counts)}</div>
+    <div style="margin-top:4px"><strong>Roles:</strong> ${formatCountMap(state.role_counts)}</div>
+    <div style="margin-top:4px"><strong>Memory files:</strong> ${memoryFiles}</div>
+    <div style="margin-top:4px"><strong>Profiles:</strong> ${escapeHtml((inventory?.profile_names || []).join(', ') || 'default only')}</div>
+    ${warnings ? `<ul style="margin:8px 0 0 16px;padding:0;opacity:.75">${warnings}</ul>` : ''}
+  `;
+}
+
+export async function loadHermesContinuityInventory(force = false) {
+  const card = document.getElementById('hermes-continuity-card');
+  if (!card) return;
+  if (card.dataset.loaded === '1' && !force) return;
+
+  const status = document.getElementById('hermes-continuity-status');
+  const refresh = document.getElementById('hermes-continuity-refresh');
+  if (status) status.textContent = 'Scanning Hermes continuity metadata…';
+  if (refresh) refresh.disabled = true;
+
+  try {
+    const res = await fetch(`${window.location.origin}/api/hermes/continuity/inventory`);
+    if (!res.ok) throw new Error(`Inventory returned ${res.status}`);
+    const inventory = await res.json();
+    renderHermesContinuityInventory(inventory);
+    card.dataset.loaded = '1';
+  } catch (error) {
+    console.error('Failed to load Hermes continuity inventory:', error);
+    if (status) status.textContent = 'Could not load Hermes continuity inventory.';
+    showError('Hermes continuity inventory failed');
+  } finally {
+    if (refresh) refresh.disabled = false;
+  }
+}
+
 function buildCategoryChips() {
   const container = document.getElementById('memory-category-filters');
   if (!container) return;
@@ -1348,6 +1441,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (target === 'skills') {
         import('./skills.js').then(m => { if (m.loadSkills) m.loadSkills(true); else if (m.default?.loadSkills) m.default.loadSkills(true); });
       }
+      if (target === 'settings') {
+        loadHermesContinuityInventory();
+      }
     });
   });
 
@@ -1395,6 +1491,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.target.files[0]) handleImportFile(e.target.files[0]);
   });
 
+  const continuityRefresh = document.getElementById('hermes-continuity-refresh');
+  if (continuityRefresh) continuityRefresh.addEventListener('click', () => loadHermesContinuityInventory(true));
+
   window.addEventListener('memory-refresh', () => {
     loadMemories();
   });
@@ -1411,7 +1510,8 @@ const memoryModule = {
   buildCategoryChips,
   tidyMemories,
   importMemories,
-  exportMemories
+  exportMemories,
+  loadHermesContinuityInventory
 };
 
 export default memoryModule;
