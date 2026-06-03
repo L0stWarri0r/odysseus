@@ -103,6 +103,7 @@ export function makeWindowDraggable(modal, options = {}) {
   let dragging = false;
   let startX = 0, startY = 0;
   let startLeft = 0, startTop = 0;
+  let grabOffsetX = 0, grabOffsetY = 0;
   let snapHint = null;
   // Whether the pointer actually moved beyond a small threshold this drag.
   // Used to suppress the synthetic click the browser fires on mouseup —
@@ -149,12 +150,20 @@ export function makeWindowDraggable(modal, options = {}) {
   const _startDrag = (cx, cy) => {
     dragging = true;
     if (modal) modal.classList.add('modal-dragging');
+    // Match windowResize.js: kill the one-shot open animation before measuring.
+    // The modal-enter animation owns `transform`; if we measure/drag while that
+    // transform is still active, the visible panel can feel offset from the
+    // cursor. Dragging is direct manipulation, so precision beats replaying the
+    // intro flourish.
+    content.style.animation = 'none';
     const rect = content.getBoundingClientRect();
     if (onDragStart) {
       try { onDragStart({ rect, cx, cy }); } catch (_) {}
     }
     startX = cx; startY = cy;
     startLeft = rect.left; startTop = rect.top;
+    grabOffsetX = cx - rect.left;
+    grabOffsetY = cy - rect.top;
     // Pin position so the drag follows the cursor instead of fighting a
     // centering transform / margin. Inline styles win unless CSS uses
     // !important (the fullscreen rules do, by design).
@@ -205,18 +214,22 @@ export function makeWindowDraggable(modal, options = {}) {
     }
     // Right-docked: pulling away from the right edge un-docks. Same for left.
     if (rightDock && modal && modal.classList.contains('modal-right-docked')) {
-      if (rightDock.onMove(cx, cy)) {
+      if (rightDock.onMove(cx, cy, { grabOffsetX, grabOffsetY })) {
         const r = content.getBoundingClientRect();
         startX = cx; startY = cy;
         startLeft = r.left; startTop = r.top;
+        grabOffsetX = cx - r.left;
+        grabOffsetY = cy - r.top;
       }
       return;
     }
     if (leftDock && modal && modal.classList.contains('modal-left-docked')) {
-      if (leftDock.onMove(cx, cy)) {
+      if (leftDock.onMove(cx, cy, { grabOffsetX, grabOffsetY })) {
         const r = content.getBoundingClientRect();
         startX = cx; startY = cy;
         startLeft = r.left; startTop = r.top;
+        grabOffsetX = cx - r.left;
+        grabOffsetY = cy - r.top;
       }
       return;
     }

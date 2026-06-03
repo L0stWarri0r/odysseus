@@ -508,10 +508,59 @@ function _expandSidebarFromRail() {
   try { window.syncRailSide && window.syncRailSide(); } catch (_) {}
 }
 
+function _finiteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function _clamp(value, min, max) {
+  if (max < min) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+// Pure helper for drag-to-undock geometry. When a docked window peels off an
+// edge, keep the same point under the cursor that the user originally grabbed
+// instead of re-centering the whole panel under the cursor. Re-centering made
+// the pointer appear detached from the Memory/Email header as soon as the dock
+// released. Clamp to the viewport so the restored window remains reachable.
+export function _computeUndockTarget({
+  cx,
+  cy,
+  refW,
+  refH,
+  grabOffsetX,
+  grabOffsetY,
+  viewportW,
+  viewportH,
+  margin = 8,
+} = {}) {
+  const w = _finiteNumber(refW) && refW > 0 ? refW : 720;
+  const h = _finiteNumber(refH) && refH > 0 ? refH : 480;
+  const vw = _finiteNumber(viewportW) && viewportW > 0
+    ? viewportW
+    : (typeof window !== 'undefined' ? window.innerWidth : w + margin * 2);
+  const vh = _finiteNumber(viewportH) && viewportH > 0
+    ? viewportH
+    : (typeof window !== 'undefined' ? window.innerHeight : h + margin * 2);
+
+  const maxLeft = Math.max(margin, vw - w - margin);
+  const maxTop = Math.max(margin, vh - h - margin);
+  const xOffset = _finiteNumber(grabOffsetX)
+    ? _clamp(grabOffsetX, 0, Math.max(0, w - 1))
+    : w / 2;
+  const yOffset = _finiteNumber(grabOffsetY)
+    ? _clamp(grabOffsetY, 0, Math.max(0, h - 1))
+    : 20;
+
+  return {
+    left: _clamp((_finiteNumber(cx) ? cx : margin) - xOffset, margin, maxLeft),
+    top: _clamp((_finiteNumber(cy) ? cy : margin) - yOffset, margin, maxTop),
+  };
+}
+
 // Un-dock a previously docked modal. Restores the exact rendered size +
 // position the modal had before being docked. (cx, cy) re-anchors the
 // drag near the cursor so the panel feels like it peeled off the edge.
-export function clearRightDock(modal, cx, cy, dockClass) {
+export function clearRightDock(modal, cx, cy, dockClass, drag = {}) {
   const nodes = _resolveDockNodes(modal);
   if (!nodes) return;
   const content = nodes.content;
@@ -561,14 +610,23 @@ export function clearRightDock(modal, cx, cy, dockClass) {
   // the original captured left/top when no cursor coords are passed.
   const refW = (r && r.width) || content.offsetWidth || 720;
   const refH = (r && r.height) || content.offsetHeight || (window.innerHeight * 0.7);
-  const targetLeft = (typeof cx === 'number')
-    ? Math.max(8, cx - refW / 2)
-    : (sty.left || (r ? r.left + 'px' : Math.max(8, (window.innerWidth - refW) / 2) + 'px'));
-  const targetTop = (typeof cy === 'number')
-    ? Math.max(8, cy - 20)
-    : (sty.top || (r ? r.top + 'px' : Math.max(8, (window.innerHeight - refH) / 3) + 'px'));
-  content.style.left = (typeof targetLeft === 'number') ? targetLeft + 'px' : targetLeft;
-  content.style.top = (typeof targetTop === 'number') ? targetTop + 'px' : targetTop;
+  if (typeof cx === 'number' || typeof cy === 'number') {
+    const target = _computeUndockTarget({
+      cx,
+      cy,
+      refW,
+      refH,
+      grabOffsetX: drag.grabOffsetX,
+      grabOffsetY: drag.grabOffsetY,
+      viewportW: window.innerWidth,
+      viewportH: window.innerHeight,
+    });
+    content.style.left = target.left + 'px';
+    content.style.top = target.top + 'px';
+  } else {
+    content.style.left = sty.left || (r ? r.left + 'px' : Math.max(8, (window.innerWidth - refW) / 2) + 'px');
+    content.style.top = sty.top || (r ? r.top + 'px' : Math.max(8, (window.innerHeight - refH) / 3) + 'px');
+  }
   delete content._preDockSnapshot;
   delete content._dockSuspended;
 }
@@ -663,10 +721,10 @@ export function makeEdgeDockController(modal, side = 'right', dockClass) {
     return window.innerWidth - cx;
   };
   return {
-    onMove(cx, cy) {
+    onMove(cx, cy, drag = {}) {
       if (modal.classList.contains(dockClass)) {
         if (_distFromEdge(cx) > UNSNAP_PX) {
-          clearRightDock(modal, cx, cy, dockClass);
+          clearRightDock(modal, cx, cy, dockClass, drag);
           return true;
         }
         return false;
