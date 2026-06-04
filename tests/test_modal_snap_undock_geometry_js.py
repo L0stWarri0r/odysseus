@@ -145,5 +145,6 @@ def test_sw_reset_is_scoped_to_odysseus_worker_and_cache_names():
     reset = (ROOT / "static/js/swReset.js").read_text(encoding="utf-8")
 
     assert "new URL(url).pathname === swPath" in reset
-    assert "key.startsWith('odysseus-')" in reset
-    assert "regs\n          .filter(isOdysseusWorker)" in reset
+    assert "const cachePrefix = options.cachePrefix || 'odysseus-'" in reset
+    assert "key.startsWith(cachePrefix)" in reset
+    assert "const odysseusRegs = regs.filter(isOdysseusWorker)" in reset

@@ -2155,9 +2155,11 @@
             <div class="admin-toggle-sub" style="display:block;margin-top:6px;opacity:0.6">Daily main-branch intake, local git state, and scoped PWA reset visibility. No chat, memory, transcript, token, or credential contents are shown here.</div>
             <div id="odysseus-maintenance-status" class="admin-toggle-sub" style="display:block;margin-top:8px;opacity:0.7">Not loaded yet.</div>
             <div id="odysseus-maintenance-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:10px"></div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
-              <a id="odysseus-maintenance-reset-link" class="admin-btn-add" href="/static/sw-reset.html" target="_blank" rel="noopener" style="text-decoration:none">Scoped PWA reset</a>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
+              <button id="odysseus-maintenance-reset-button" class="admin-btn-add" type="button" title="Clear Odysseus service worker and odysseus-* Cache Storage, then reload fresh">Reset Odysseus now</button>
+              <a id="odysseus-maintenance-reset-link" class="memory-toolbar-btn" href="/static/sw-reset.html" target="_blank" rel="noopener" style="text-decoration:none">Open reset page</a>
             </div>
+            <div id="odysseus-maintenance-reset-status" class="admin-toggle-sub" style="display:block;margin-top:6px;opacity:0.65">Scoped PWA reset: keeps cookies and localStorage; clears only the Odysseus service worker plus odysseus-* caches.</div>
             <div id="odysseus-maintenance-detail" class="admin-toggle-sub" style="display:block;margin-top:8px;opacity:0.6"></div>
           </div>
 

@@ -2114,11 +2114,52 @@ async function loadOdysseusMaintenanceStatus(force = false) {
   }
 }
 
+async function resetOdysseusFromMaintenancePanel() {
+  const resetBtn = el('odysseus-maintenance-reset-button');
+  const statusEl = el('odysseus-maintenance-reset-status');
+  const previousText = resetBtn ? resetBtn.textContent : '';
+
+  const confirmed = await uiModule.styledConfirm(
+    'Reset Odysseus local cache and reload fresh? This keeps cookies and localStorage, and only clears the Odysseus service worker plus odysseus-* Cache Storage.',
+    { confirmText: 'Reset Odysseus', danger: false }
+  );
+  if (!confirmed) return;
+
+  if (resetBtn) {
+    resetBtn.disabled = true;
+    resetBtn.textContent = 'Resetting…';
+  }
+  if (statusEl) statusEl.textContent = 'Preparing scoped Odysseus reset…';
+
+  try {
+    const resetModule = await import('/static/js/swReset.js');
+    const result = await resetModule.resetOdysseusLocalCache({
+      statusElementId: 'odysseus-maintenance-reset-status',
+      redirect: true,
+    });
+    if (result && result.ok === false) throw result.error || new Error('Odysseus reset failed');
+  } catch (e) {
+    console.error('Failed to reset Odysseus local cache:', e);
+    if (statusEl) statusEl.textContent = 'Reset failed. Open the reset page or check the browser console.';
+    if (resetBtn) {
+      resetBtn.disabled = false;
+      resetBtn.textContent = previousText || 'Reset Odysseus now';
+    }
+    uiModule.showToast && uiModule.showToast('Odysseus reset failed', 'error');
+  }
+}
+
 function initOdysseusMaintenance() {
   const refreshBtn = el('odysseus-maintenance-refresh');
   if (refreshBtn && refreshBtn.dataset.bound !== '1') {
     refreshBtn.dataset.bound = '1';
     refreshBtn.addEventListener('click', () => loadOdysseusMaintenanceStatus(true));
+  }
+
+  const resetBtn = el('odysseus-maintenance-reset-button');
+  if (resetBtn && resetBtn.dataset.bound !== '1') {
+    resetBtn.dataset.bound = '1';
+    resetBtn.addEventListener('click', resetOdysseusFromMaintenancePanel);
   }
 }
 
