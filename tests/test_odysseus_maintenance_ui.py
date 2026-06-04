@@ -58,6 +58,18 @@ def test_admin_js_fetches_and_renders_maintenance_status():
     assert "PWA reset" in js
 
 
+def test_admin_js_shows_actionable_auth_state_instead_of_generic_status_failure():
+    js = ADMIN_JS.read_text(encoding="utf-8")
+
+    assert "renderOdysseusMaintenanceUnavailable" in js
+    assert "readMaintenanceError" in js
+    assert "res.status === 401 || res.status === 403" in js
+    assert "Maintenance status needs a fresh login session." in js
+    assert "Maintenance status is admin-only." in js
+    assert "Repo details stay hidden until an admin session can read metadata." in js
+    assert "Odysseus maintenance status failed (${res.status})" in js
+
+
 def test_admin_js_reset_button_runs_scoped_reset_helper():
     js = ADMIN_JS.read_text(encoding="utf-8")
 

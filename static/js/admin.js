@@ -2089,6 +2089,49 @@ function renderOdysseusMaintenanceStatus(data) {
   `;
 }
 
+async function readMaintenanceError(res) {
+  try {
+    const data = await res.clone().json();
+    return data.detail || data.error || data.message || '';
+  } catch (_) {
+    try { return (await res.text()).trim(); } catch (_) { return ''; }
+  }
+}
+
+function renderOdysseusMaintenanceUnavailable(statusCode, message = '') {
+  const statusEl = el('odysseus-maintenance-status');
+  const summaryEl = el('odysseus-maintenance-summary');
+  const detailEl = el('odysseus-maintenance-detail');
+  if (!statusEl || !summaryEl || !detailEl) return;
+
+  if (statusCode === 401 || statusCode === 403) {
+    statusEl.textContent = statusCode === 401
+      ? 'Maintenance status needs a fresh login session.'
+      : 'Maintenance status is admin-only.';
+    summaryEl.innerHTML = [
+      maintenanceMetric('status', statusCode === 401 ? 'login required' : 'admin only'),
+      maintenanceMetric('repo metadata', 'hidden'),
+      maintenanceMetric('privacy', 'protected'),
+    ].join('');
+    detailEl.innerHTML = `
+      <div><strong>Why:</strong> ${esc(message || (statusCode === 401 ? 'Not authenticated' : 'Admin only'))}</div>
+      <div style="margin-top:4px"><strong>Fix:</strong> Reload Odysseus, sign in as the admin user, then press Refresh status.</div>
+      <div style="margin-top:4px"><strong>Privacy:</strong> Repo details stay hidden until an admin session can read metadata.</div>
+    `;
+    return;
+  }
+
+  statusEl.textContent = `Could not load Odysseus maintenance status${statusCode ? ` (${statusCode})` : ''}.`;
+  summaryEl.innerHTML = [
+    maintenanceMetric('status', 'failed'),
+    maintenanceMetric('response', statusCode || 'network'),
+  ].join('');
+  detailEl.innerHTML = `
+    <div><strong>Error:</strong> ${esc(message || 'No response details returned.')}</div>
+    <div style="margin-top:4px"><strong>Next:</strong> Check the server console/logs and press Refresh status after the server is healthy.</div>
+  `;
+}
+
 async function loadOdysseusMaintenanceStatus(force = false) {
   const card = el('odysseus-maintenance-card');
   if (!card) return;
@@ -2101,13 +2144,20 @@ async function loadOdysseusMaintenanceStatus(force = false) {
 
   try {
     const res = await fetch('/api/hermes/maintenance/status', { credentials: 'same-origin' });
-    if (!res.ok) throw new Error(`Maintenance status returned ${res.status}`);
+    if (!res.ok) {
+      const detail = await readMaintenanceError(res);
+      renderOdysseusMaintenanceUnavailable(res.status, detail);
+      if (res.status !== 401 && res.status !== 403) {
+        uiModule.showToast && uiModule.showToast(`Odysseus maintenance status failed (${res.status})`, 'error');
+      }
+      return;
+    }
     const data = await res.json();
     renderOdysseusMaintenanceStatus(data);
     card.dataset.loaded = '1';
   } catch (e) {
     console.error('Failed to load Odysseus maintenance status:', e);
-    if (statusEl) statusEl.textContent = 'Could not load Odysseus maintenance status.';
+    renderOdysseusMaintenanceUnavailable(0, e?.message || 'Network request failed.');
     uiModule.showToast && uiModule.showToast('Odysseus maintenance status failed', 'error');
   } finally {
     if (refreshBtn) refreshBtn.disabled = false;
