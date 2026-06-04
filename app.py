@@ -379,6 +379,11 @@ class _RevalidatingStatic(StaticFiles):
         resp = await super().get_response(path, scope)
         if path.endswith((".js", ".css", ".html")):
             resp.headers["Cache-Control"] = "no-cache"
+        if path == "sw.js":
+            # The worker lives under /static/ for file organization, but the SPA
+            # routes live at /. Permit explicit root-scope registration so the
+            # network-first app-shell strategy actually controls Odysseus.
+            resp.headers["Service-Worker-Allowed"] = "/"
         return resp
 
 

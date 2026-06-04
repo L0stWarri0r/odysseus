@@ -4799,6 +4799,11 @@ body.bg-pattern-sparkles {
       pointer-events:auto;
       animation: modal-enter 0.25s ease-out both;
     }
+    .modal-content.window-drag-positioned {
+      position: fixed !important;
+      margin: 0 !important;
+    }
+
     .modal-header {
       display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;
       cursor:grab; user-select:none;
@@ -4818,6 +4823,13 @@ body.bg-pattern-sparkles {
       background-color: inherit;
     }
     .modal-header:active { cursor:grabbing; }
+    /* Shared window drag (windowDrag.js). Match resize behavior: suppress text
+       selection and force a stable cursor across the whole document while the
+       pointer is moving over buttons/cards/inputs underneath the dragged pane. */
+    body.window-dragging-active { user-select:none !important; cursor:grabbing !important; }
+    body.window-dragging-active * { cursor:inherit !important; }
+    .modal-dragging .modal-content { transition:none !important; }
+    .modal-dragging .modal-header { cursor:grabbing !important; touch-action:none; }
     /* Edge/corner window resize (windowResize.js). While a resize is in
        progress, suppress text selection and force the active resize cursor
        across the whole document so it does not flicker as the pointer passes
