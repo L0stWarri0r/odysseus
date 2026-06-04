@@ -2040,11 +2040,94 @@ function initDangerZone() {
 }
 
 /* ═══════════════════════════════════════════
+   ODYSSEUS MAINTENANCE
+   ═══════════════════════════════════════════ */
+function maintenanceMetric(label, value, sub = '') {
+  return `<div style="border:1px solid var(--border);border-radius:8px;padding:8px;background:color-mix(in srgb,var(--fg) 3%,transparent);">
+    <div style="font-size:10px;letter-spacing:.04em;text-transform:uppercase;opacity:.55">${esc(label)}</div>
+    <div style="font-size:18px;font-weight:700;line-height:1.2;margin-top:2px;font-variant-numeric:tabular-nums">${esc(String(value ?? '—'))}</div>
+    ${sub ? `<div style="font-size:10px;opacity:.55;margin-top:2px">${esc(sub)}</div>` : ''}
+  </div>`;
+}
+
+function renderOdysseusMaintenanceStatus(data) {
+  const statusEl = el('odysseus-maintenance-status');
+  const summaryEl = el('odysseus-maintenance-summary');
+  const detailEl = el('odysseus-maintenance-detail');
+  const resetLink = el('odysseus-maintenance-reset-link');
+  if (!statusEl || !summaryEl || !detailEl) return;
+
+  const repo = data?.repo || {};
+  const pwa = data?.pwa || {};
+  const automation = data?.automation || {};
+  const dirty = repo.dirty === null || repo.dirty === undefined ? 'unknown' : (repo.dirty ? 'dirty' : 'clean');
+  const branch = repo.branch || 'unknown';
+  const aheadBehind = `${Number(repo.ahead || 0)} ahead · ${Number(repo.behind || 0)} behind`;
+  const resetUrl = pwa.reset_url || '/static/sw-reset.html';
+
+  statusEl.textContent = repo.exists
+    ? `Repo ${dirty} on ${branch}${repo.head ? ` @ ${repo.head}` : ''}`
+    : `Odysseus repo not found: ${repo.path || 'unknown'}`;
+
+  summaryEl.innerHTML = [
+    maintenanceMetric('branch', branch, aheadBehind),
+    maintenanceMetric('working tree', dirty),
+    maintenanceMetric('head', repo.head || 'unknown', repo.head_subject || ''),
+    maintenanceMetric('upstream/main', repo.upstream_main || 'unknown'),
+    maintenanceMetric('daily intake', automation.daily_intake_script_exists ? 'armed' : 'missing', automation.daily_intake_schedule || ''),
+    maintenanceMetric('PWA reset', pwa.reset_page_exists ? 'ready' : 'missing', pwa.cache_prefix || 'odysseus-'),
+  ].join('');
+
+  if (resetLink) resetLink.href = resetUrl;
+  const errors = (repo.errors || []).map(msg => `<li>${esc(msg)}</li>`).join('');
+  detailEl.innerHTML = `
+    <div><strong>Repo:</strong> ${esc(repo.path || 'unknown')}</div>
+    <div style="margin-top:4px"><strong>Daily main-branch intake:</strong> ${esc(automation.daily_intake_behavior || 'not reported')}</div>
+    <div style="margin-top:4px"><strong>PWA reset:</strong> ${esc(pwa.reset_scope || 'Odysseus cache/service-worker scope')}</div>
+    <div style="margin-top:4px"><strong>Privacy:</strong> ${esc(data?.privacy_note || 'metadata-only')}</div>
+    ${errors ? `<ul style="margin:8px 0 0 16px;padding:0;opacity:.75">${errors}</ul>` : ''}
+  `;
+}
+
+async function loadOdysseusMaintenanceStatus(force = false) {
+  const card = el('odysseus-maintenance-card');
+  if (!card) return;
+  if (card.dataset.loaded === '1' && !force) return;
+
+  const statusEl = el('odysseus-maintenance-status');
+  const refreshBtn = el('odysseus-maintenance-refresh');
+  if (statusEl) statusEl.textContent = 'Scanning Odysseus maintenance metadata…';
+  if (refreshBtn) refreshBtn.disabled = true;
+
+  try {
+    const res = await fetch('/api/hermes/maintenance/status', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error(`Maintenance status returned ${res.status}`);
+    const data = await res.json();
+    renderOdysseusMaintenanceStatus(data);
+    card.dataset.loaded = '1';
+  } catch (e) {
+    console.error('Failed to load Odysseus maintenance status:', e);
+    if (statusEl) statusEl.textContent = 'Could not load Odysseus maintenance status.';
+    uiModule.showToast && uiModule.showToast('Odysseus maintenance status failed', 'error');
+  } finally {
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
+}
+
+function initOdysseusMaintenance() {
+  const refreshBtn = el('odysseus-maintenance-refresh');
+  if (refreshBtn && refreshBtn.dataset.bound !== '1') {
+    refreshBtn.dataset.bound = '1';
+    refreshBtn.addEventListener('click', () => loadOdysseusMaintenanceStatus(true));
+  }
+}
+
+/* ═══════════════════════════════════════════
    INIT & REFRESH
    ═══════════════════════════════════════════ */
 function initAll() {
   modalEl = el('settings-modal');
-  const inits = [initSignupToggle, initAddUser, initEndpointForm, initMcpForm, initCalDAV, initBackup, initDangerZone, () => settingsModule.initIntegrations()];
+  const inits = [initSignupToggle, initAddUser, initEndpointForm, initMcpForm, initCalDAV, initBackup, initDangerZone, initOdysseusMaintenance, () => settingsModule.initIntegrations()];
   for (const fn of inits) {
     try { fn(); } catch (e) { console.error('Admin init error in', fn.name || 'anonymous', e); }
   }
@@ -2057,6 +2140,7 @@ function refreshAll() {
   loadEndpoints();
   loadBuiltinTools();
   loadMcpServers();
+  loadOdysseusMaintenanceStatus(false);
 }
 
 /* ═══════════════════════════════════════════
