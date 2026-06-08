@@ -85,7 +85,7 @@ class Session(TimestampMixin, Base):
     
     # Session metadata
     name = Column(String, nullable=False)
-    endpoint_url = Column(String, nullable=False)
+    endpoint_url = Column(String, nullable=False, default="")
     model = Column(String, nullable=False)
     owner = Column(String, nullable=True, index=True)  # username; null = legacy/shared
     

@@ -2,6 +2,7 @@
 """Search service — clean interface for web search."""
 
 from dataclasses import dataclass
+import inspect
 from typing import List, Optional, Dict, Any
 
 from . import (
@@ -69,12 +70,28 @@ class SearchService:
         # `fetch_content` is accepted for API compatibility; the comprehensive
         # search always fetches page content.
         import asyncio
-        _context, raw_results = await asyncio.to_thread(
-            comprehensive_web_search,
-            query,
-            max_pages=10 * depth,
-            return_sources=True,
-        )
+        try:
+            search_result = await asyncio.to_thread(
+                comprehensive_web_search,
+                query,
+                max_pages=10 * depth,
+                return_sources=True,
+            )
+        except TypeError as exc:
+            if "max_pages" not in str(exc) and "return_sources" not in str(exc):
+                raise
+            search_result = await asyncio.to_thread(
+                comprehensive_web_search,
+                query,
+                max_results=10 * depth,
+                fetch_content=fetch_content if fetch_content is not None else self.fetch_content,
+            )
+        if inspect.isawaitable(search_result):
+            search_result = await search_result
+        if isinstance(search_result, tuple) and len(search_result) == 2:
+            _context, raw_results = search_result
+        else:
+            raw_results = search_result or []
 
         results = []
         for r in raw_results:
