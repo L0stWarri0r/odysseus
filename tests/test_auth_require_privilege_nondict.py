@@ -14,6 +14,11 @@ class _Mgr:
         return self._privs
 
 
+class _RaisingMgr:
+    def get_privileges(self, user):
+        raise RuntimeError("auth store unavailable")
+
+
 def _request(mgr):
     state = types.SimpleNamespace(auth_manager=mgr)
     return types.SimpleNamespace(app=types.SimpleNamespace(state=state))
@@ -34,3 +39,15 @@ def test_require_privilege_still_blocks_disallowed(monkeypatch):
     req = _request(_Mgr({"do_x": False}))
     with pytest.raises(Exception):
         require_privilege(req, "do_x")
+
+
+def test_require_privilege_fails_closed_when_lookup_raises(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(auth_helpers, "require_user", lambda request: "bob")
+    req = _request(_RaisingMgr())
+
+    with pytest.raises(HTTPException) as exc:
+        require_privilege(req, "do_x")
+
+    assert exc.value.status_code == 403

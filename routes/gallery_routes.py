@@ -28,6 +28,19 @@ def _sanitize_gallery_filename(filename: str) -> str:
         safe_name = uuid.uuid4().hex[:12]
     return safe_name
 
+
+def _validate_returned_image_url(url: str) -> str:
+    """Reject provider-returned image URLs that would be unsafe to fetch."""
+    from src.url_safety import check_outbound_url
+
+    ok, reason = check_outbound_url(
+        url,
+        block_private=os.getenv("IMAGE_BLOCK_PRIVATE_IPS", "false").lower() == "true",
+    )
+    if not ok:
+        raise HTTPException(502, f"Image provider returned unsafe image URL: {reason}")
+    return url
+
 def setup_gallery_routes() -> APIRouter:
     router = APIRouter(tags=["gallery"])
 
@@ -1052,6 +1065,7 @@ def setup_gallery_routes() -> APIRouter:
                         if item.get("b64_json"):
                             raw_b64 = item["b64_json"]
                         elif item.get("url"):
+                            _validate_returned_image_url(item.get("url"))
                             async with httpx.AsyncClient(timeout=60) as c2:
                                 img_r = await c2.get(item["url"])
                                 if img_r.status_code == 200:
@@ -1293,6 +1307,7 @@ def setup_gallery_routes() -> APIRouter:
                             if item.get("b64_json"):
                                 return {"image": item["b64_json"]}
                             if item.get("url"):
+                                _validate_returned_image_url(item.get("url"))
                                 async with httpx.AsyncClient(timeout=60) as c2:
                                     ir = await c2.get(item["url"])
                                     if ir.status_code == 200:

@@ -1541,6 +1541,17 @@ async def do_ui_control(content: str, session_id: Optional[str] = None) -> Dict:
 # Image generation
 # ---------------------------------------------------------------------------
 
+def _check_image_download_url(url: str) -> Tuple[bool, str]:
+    """Validate a provider-returned image URL before downloading it."""
+    import os
+    from src.url_safety import check_outbound_url
+
+    return check_outbound_url(
+        url,
+        block_private=os.getenv("IMAGE_BLOCK_PRIVATE_IPS", "false").lower() == "true",
+    )
+
+
 async def do_generate_image(content: str, session_id: Optional[str] = None, owner: Optional[str] = None) -> Dict:
     """Generate an image using an image-capable model (e.g. gpt-image-1).
 
@@ -1714,6 +1725,9 @@ async def do_generate_image(content: str, session_id: Optional[str] = None, owne
 
             elif img.get("url"):
                 # Download external URL and save locally (DALL-E returns temp URLs)
+                ok, reason = _check_image_download_url(img.get("url"))
+                if not ok:
+                    return {"error": f"Image API returned unsafe image URL: {reason}"}
                 try:
                     dl_resp = httpx.get(img["url"], timeout=60)
                     if dl_resp.status_code == 200:

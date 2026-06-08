@@ -106,11 +106,11 @@ def require_privilege(request: Request, key: str) -> str:
     try:
         privs = auth_mgr.get_privileges(user) or {}
     except Exception:
-        return user
+        raise HTTPException(403, "Privilege lookup failed")
     if not isinstance(privs, dict):
         privs = {}
-    # True = permitted; missing key defaults to permitted (unknown privileges
-    # fail open — the UI gates display-side).
+    # True = permitted; missing keys default to permitted so older auth.json
+    # files keep working when new privilege flags are introduced.
     if not privs.get(key, True):
         raise HTTPException(403, f"Your account is not allowed to {key.replace('_', ' ')}.")
     return user

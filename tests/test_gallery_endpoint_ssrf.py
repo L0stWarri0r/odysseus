@@ -42,3 +42,26 @@ def test_url_safety_blocks_metadata_endpoint():
     from src.url_safety import check_outbound_url
     ok, _ = check_outbound_url("http://169.254.169.254/latest/meta-data")
     assert ok is False
+
+
+def test_returned_image_url_validated_before_secondary_fetch():
+    src = SRC.read_text()
+    for func in ("harmonize_image", "inpaint_proxy"):
+        body = _function_source(src, func)
+        assert "_validate_returned_image_url(item.get(\"url\"))" in body
+        assert body.index("_validate_returned_image_url(item.get(\"url\"))") < body.index(
+            ".get(item[\"url\"]"
+        )
+
+
+def test_returned_image_url_blocks_metadata_endpoint():
+    from fastapi import HTTPException
+    from routes.gallery_routes import _validate_returned_image_url
+
+    try:
+        _validate_returned_image_url("http://169.254.169.254/latest/meta-data")
+    except HTTPException as exc:
+        assert exc.status_code == 502
+        assert "unsafe image URL" in str(exc.detail)
+    else:
+        raise AssertionError("metadata URL should be rejected before download")

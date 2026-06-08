@@ -1,5 +1,6 @@
 """Tests for shell_routes.py helpers."""
 
+import asyncio
 import builtins
 import importlib.util
 import json
@@ -361,3 +362,39 @@ class TestRejectCrossSite:
 
     def test_missing_header_allowed(self):
         assert _reject_cross_site(self._req({})) is None
+
+
+def _route_endpoint(path: str):
+    import routes.shell_routes as shell_routes
+
+    router = shell_routes.setup_shell_routes()
+    for route in router.routes:
+        if getattr(route, "path", None) == path:
+            return route.endpoint
+    raise AssertionError(f"route not found: {path}")
+
+
+def test_shell_exec_rejects_cross_site_before_admin_check():
+    from fastapi import HTTPException
+
+    endpoint = _route_endpoint("/api/shell/exec")
+    request = SimpleNamespace(headers={"sec-fetch-site": "cross-site"})
+    req = SimpleNamespace(command="echo should-not-run")
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(endpoint(request, req))
+
+    assert exc.value.status_code == 403
+
+
+def test_shell_stream_rejects_cross_site_before_admin_check():
+    from fastapi import HTTPException
+
+    endpoint = _route_endpoint("/api/shell/stream")
+    request = SimpleNamespace(headers={"sec-fetch-site": "cross-site"})
+    req = SimpleNamespace(command="echo should-not-run")
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(endpoint(request, req))
+
+    assert exc.value.status_code == 403
