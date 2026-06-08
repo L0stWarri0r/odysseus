@@ -4,6 +4,11 @@ It did `len(text)` directly, so `_truncate(None)` raised TypeError. Returning
 the raw non-string just moves the crash downstream (callers treat it as text),
 so non-strings are now coerced to a string and still truncated.
 """
+import sys
+
+for mod in ["src.agent_tools", "src.tool_parsing", "src.tool_schemas", "src.tool_execution"]:
+    sys.modules.pop(mod, None)
+
 from src.agent_tools import _truncate
 
 
