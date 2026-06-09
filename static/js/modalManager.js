@@ -31,6 +31,15 @@ import { dismissOrRemove } from './escMenuStack.js';
 
 const _state = new Map(); // id -> { restoreFn, closeFn, railBtnId, isMinimized, restoreMinHeight }
 
+function _escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 const _rememberedDockKey = (id) => `odysseus-modal-remembered-dock-${id}`;
 function _rememberDock(id, side) {
   if (!id || !side) return;
@@ -359,7 +368,7 @@ function _renderDock() {
       : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${meta.icon}"/></svg>`;
     chip.innerHTML = `
       ${iconHtml}
-      <span class="minimized-dock-label">${meta.label}</span>
+      <span class="minimized-dock-label">${_escapeHtml(meta.label)}</span>
       <span class="minimized-dock-x" title="Close">×</span>
     `;
     chip.addEventListener('click', (e) => {
