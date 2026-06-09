@@ -132,7 +132,10 @@ def _owner_filter(q, user):
         return q.filter(False)
     if user == "":
         return q
-    return q.filter(GalleryImage.owner == user)
+    owner_column = getattr(GalleryImage, "owner", None)
+    if owner_column is None:
+        return q.filter(False)
+    return q.filter(owner_column == user)
 
 
 
