@@ -110,6 +110,17 @@ def _install_model_route_import_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "src.endpoint_resolver", endpoint_resolver_mod)
 
 
+def _install_endpoint_resolver_stub(monkeypatch):
+    endpoint_resolver_mod = types.ModuleType("src.endpoint_resolver")
+    endpoint_resolver_mod.normalize_base = lambda base: (base or "").rstrip("/")
+    endpoint_resolver_mod.build_chat_url = lambda base: f"{base}/chat/completions"
+    endpoint_resolver_mod.build_models_url = lambda base: f"{base}/models"
+    endpoint_resolver_mod.build_headers = lambda api_key, base: {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    monkeypatch.delitem(sys.modules, "src.endpoint_resolver", raising=False)
+    monkeypatch.setitem(sys.modules, "src.endpoint_resolver", endpoint_resolver_mod)
+    return endpoint_resolver_mod
+
+
 def _install_core_auth_stub(monkeypatch):
     """Install the narrow auth surface needed by tool-policy tests."""
     core_mod = types.ModuleType("core")
@@ -299,6 +310,8 @@ def test_preset_manager_migrates_legacy_default_custom_preset_disabled(tmp_path)
 
 
 def test_normalize_thinking_handles_lowercase_thinking_process(monkeypatch):
+    _install_endpoint_resolver_stub(monkeypatch)
+    monkeypatch.delitem(sys.modules, "routes.chat_helpers", raising=False)
     for mod_name in [
         "starlette.middleware",
         "starlette.middleware.base",
@@ -332,6 +345,8 @@ def test_normalize_thinking_handles_lowercase_thinking_process(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_build_chat_context_incognito_does_not_duplicate_current_user_message(monkeypatch):
+    _install_endpoint_resolver_stub(monkeypatch)
+    monkeypatch.delitem(sys.modules, "routes.chat_helpers", raising=False)
     for mod_name in [
         "starlette.middleware",
         "starlette.middleware.base",
