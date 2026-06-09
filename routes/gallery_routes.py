@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
-from src.auth_helpers import get_current_user, require_privilege
+from src.auth_helpers import get_current_user, require_privilege, require_user
 
 from routes.gallery_helpers import (
     GalleryPatch, _extract_exif, _image_to_dict, _owner_filter, _human_size,
@@ -331,7 +331,7 @@ def setup_gallery_routes() -> APIRouter:
     @router.get("/api/gallery/tags")
     async def gallery_tags(request: Request) -> Dict[str, Any]:
         """Return distinct tags across all active gallery images."""
-        user = get_current_user(request)
+        user = require_user(request)
         db = SessionLocal()
         try:
             q = db.query(GalleryImage.tags).filter(
@@ -363,7 +363,7 @@ def setup_gallery_routes() -> APIRouter:
         offset: int = Query(0, ge=0),
         limit: int = Query(24, ge=1, le=100),
     ) -> Dict[str, Any]:
-        user = get_current_user(request)
+        user = require_user(request)
         db = SessionLocal()
         try:
             # Distinct tags for filter UI
@@ -393,8 +393,7 @@ def setup_gallery_routes() -> APIRouter:
                 .outerjoin(DbSession, GalleryImage.session_id == DbSession.id)
                 .filter(GalleryImage.is_active == True)
             )
-            if user is not None:
-                q = q.filter(GalleryImage.owner == user)
+            q = _owner_filter(q, user)
 
             # Search filter (prompt + tags + ai_tags)
             if search:
@@ -718,7 +717,7 @@ def setup_gallery_routes() -> APIRouter:
     # AI-suggested values you never added.
     @router.post("/api/gallery/clear-user-tags")
     async def clear_gallery_user_tags(request: Request) -> Dict[str, Any]:
-        user = get_current_user(request)
+        user = require_user(request)
         db = SessionLocal()
         try:
             q = db.query(GalleryImage).filter(GalleryImage.is_active == True)
@@ -742,7 +741,7 @@ def setup_gallery_routes() -> APIRouter:
     # "woman" have leaked into the gallery and you want them gone.
     @router.post("/api/gallery/clear-ai-tags")
     async def clear_gallery_ai_tags(request: Request, image_id: Optional[str] = Query(None)) -> Dict[str, Any]:
-        user = get_current_user(request)
+        user = require_user(request)
         db = SessionLocal()
         try:
             q = db.query(GalleryImage).filter(GalleryImage.is_active == True)
@@ -768,7 +767,7 @@ def setup_gallery_routes() -> APIRouter:
     # Returns how many rows were touched + how many tags removed.
     @router.post("/api/gallery/dedupe-tags")
     async def dedupe_gallery_tags(request: Request) -> Dict[str, Any]:
-        user = get_current_user(request)
+        user = require_user(request)
         db = SessionLocal()
         try:
             q = db.query(GalleryImage).filter(GalleryImage.is_active == True)

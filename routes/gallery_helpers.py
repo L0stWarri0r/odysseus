@@ -123,14 +123,14 @@ def _image_to_dict(img: GalleryImage, session_name: str = None) -> Dict[str, Any
 def _owner_filter(q, user):
     """Apply owner filtering to a gallery query.
 
-    When auth is disabled (single-user mode) get_current_user returns None
-    and there is no per-user scoping. The main library list and stats already
-    treat None as "show everything" (`if user is not None`), so this helper
-    must too — otherwise the tag/model filter sidebars come back empty and the
-    tag-cleanup endpoints (clear-user-tags, clear-ai-tags, dedupe-tags)
-    silently affect zero rows in the most common self-hosted deployment.
+    ``None`` means the route did not establish a trusted caller and must fail
+    closed. ``""`` is the explicit single-user sentinel returned by
+    require_user() when auth is disabled or the first-run loopback path is in
+    effect, so it intentionally leaves the query unscoped.
     """
     if user is None:
+        return q.filter(False)
+    if user == "":
         return q
     return q.filter(GalleryImage.owner == user)
 

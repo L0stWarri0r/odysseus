@@ -90,10 +90,16 @@ def _install_model_route_import_stubs(monkeypatch):
     exceptions_mod.SessionNotFoundError = type("SessionNotFoundError", (Exception,), {})
     session_mgr_mod = types.ModuleType("core.session_manager")
     session_mgr_mod.SessionManager = MagicMock()
+    endpoint_resolver_mod = types.ModuleType("src.endpoint_resolver")
+    endpoint_resolver_mod.normalize_base = lambda base: (base or "").rstrip("/")
+    endpoint_resolver_mod.build_chat_url = lambda base: f"{base}/chat/completions"
+    endpoint_resolver_mod.build_models_url = lambda base: f"{base}/models"
+    endpoint_resolver_mod.build_headers = lambda api_key, base: {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     monkeypatch.delitem(sys.modules, "routes.model_routes", raising=False)
     monkeypatch.delitem(sys.modules, "routes.chat_routes", raising=False)
     monkeypatch.delitem(sys.modules, "routes.session_routes", raising=False)
+    monkeypatch.delitem(sys.modules, "src.endpoint_resolver", raising=False)
     monkeypatch.setitem(sys.modules, "core", core_mod)
     monkeypatch.setitem(sys.modules, "core.database", db_mod)
     monkeypatch.setitem(sys.modules, "core.middleware", middleware_mod)
@@ -101,6 +107,7 @@ def _install_model_route_import_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.models", models_mod)
     monkeypatch.setitem(sys.modules, "core.exceptions", exceptions_mod)
     monkeypatch.setitem(sys.modules, "core.session_manager", session_mgr_mod)
+    monkeypatch.setitem(sys.modules, "src.endpoint_resolver", endpoint_resolver_mod)
 
 
 def _install_core_auth_stub(monkeypatch):
