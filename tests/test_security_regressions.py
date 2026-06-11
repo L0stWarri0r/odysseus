@@ -695,6 +695,53 @@ def test_require_admin_allows_when_auth_explicitly_disabled(monkeypatch):
     assert require_admin(_Req()) is None
 
 
+def test_require_admin_internal_token_requires_direct_loopback(monkeypatch):
+    from fastapi import HTTPException
+    from core.middleware import INTERNAL_TOOL_HEADER, INTERNAL_TOOL_TOKEN, require_admin
+
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+
+    class _State:
+        current_user = None
+
+    class _AppState:
+        class _Mgr:
+            is_configured = True
+
+            @staticmethod
+            def is_admin(_user):
+                return False
+
+        auth_manager = _Mgr()
+
+    class _App:
+        state = _AppState()
+
+    class _Client:
+        def __init__(self, host):
+            self.host = host
+
+    class _Req:
+        state = _State()
+        app = _App()
+
+        def __init__(self, host, headers=None):
+            self.client = _Client(host)
+            self.headers = headers or {}
+
+    token_headers = {INTERNAL_TOOL_HEADER: INTERNAL_TOOL_TOKEN}
+
+    with pytest.raises(HTTPException) as exc:
+        require_admin(_Req("203.0.113.9", token_headers))
+    assert exc.value.status_code == 403
+
+    with pytest.raises(HTTPException) as exc:
+        require_admin(_Req("127.0.0.1", {**token_headers, "x-forwarded-for": "203.0.113.9"}))
+    assert exc.value.status_code == 403
+
+    assert require_admin(_Req("127.0.0.1", token_headers)) is None
+
+
 def test_internal_tool_owner_header_logic_requires_known_user():
     """Pin the owner-attribution branch used by app.AuthMiddleware without
     booting the full FastAPI app."""
@@ -1021,6 +1068,17 @@ def test_gallery_replace_filename_sanitizer_falls_back_when_empty(monkeypatch):
     monkeypatch.setattr(mod.uuid, "uuid4", lambda: types.SimpleNamespace(hex="abcdef1234567890"))
 
     assert mod._sanitize_gallery_filename("../") == "abcdef123456"
+
+
+def test_generated_image_route_fails_closed_on_ownership_errors():
+    src = Path(__file__).resolve().parents[1] / "app.py"
+    text = src.read_text(encoding="utf-8")
+    body = text.split("async def serve_generated_image(", 1)[1].split("ext = filename", 1)[0]
+
+    assert "require_user(request)" in body
+    assert "Image ownership check unavailable" in body
+    assert "except Exception:\n        pass" not in body
+
 
 def test_chat_active_document_lookup_is_owner_scoped():
     """The explicit `active_doc_id` path in /api/chat_stream must scope the

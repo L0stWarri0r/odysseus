@@ -15,6 +15,28 @@ from starlette.responses import Response
 # same value from this module. Never persisted or exposed externally.
 INTERNAL_TOOL_TOKEN = os.environ.get("ODYSSEUS_INTERNAL_TOKEN") or secrets.token_hex(32)
 INTERNAL_TOOL_HEADER = "X-Odysseus-Internal-Token"
+_PROXY_FWD_HEADERS = (
+    "cf-connecting-ip",
+    "x-forwarded-for",
+    "x-real-ip",
+    "forwarded",
+)
+
+
+def is_trusted_loopback(request: Request) -> bool:
+    """Return True only for direct loopback requests.
+
+    Reverse proxies and tunnels often connect to the app from 127.0.0.1 while
+    carrying the original remote address in forwarding headers. Treat those as
+    untrusted so loopback-only bypasses cannot be inherited by public traffic.
+    """
+    host = request.client.host if getattr(request, "client", None) else None
+    if host not in ("127.0.0.1", "::1"):
+        return False
+    for header in _PROXY_FWD_HEADERS:
+        if request.headers.get(header):
+            return False
+    return True
 
 
 def require_admin(request: Request):
@@ -28,7 +50,7 @@ def require_admin(request: Request):
     #     request.state.current_user = "internal-tool".
     try:
         hdr = request.headers.get(INTERNAL_TOOL_HEADER)
-        if hdr and secrets.compare_digest(hdr, INTERNAL_TOOL_TOKEN):
+        if hdr and secrets.compare_digest(hdr, INTERNAL_TOOL_TOKEN) and is_trusted_loopback(request):
             return
         if getattr(request.state, "current_user", None) == "internal-tool":
             return

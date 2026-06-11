@@ -71,6 +71,10 @@ def _default_chat_endpoint():
 
 
 def _install_model_route_import_stubs(monkeypatch):
+    endpoint_resolver = sys.modules.get("src.endpoint_resolver")
+    if endpoint_resolver is not None and not getattr(endpoint_resolver, "__file__", None):
+        monkeypatch.delitem(sys.modules, "src.endpoint_resolver", raising=False)
+
     core_mod = types.ModuleType("core")
     core_mod.__path__ = []
     db_mod = types.ModuleType("core.database")

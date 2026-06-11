@@ -51,7 +51,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 # Core imports
 from core.constants import (
-    BASE_DIR, STATIC_DIR, SESSIONS_FILE,
+    APP_VERSION, BASE_DIR, STATIC_DIR, SESSIONS_FILE,
     REQUEST_TIMEOUT, OPENAI_API_KEY,
 )
 from core.database import SessionLocal, ApiToken
@@ -81,7 +81,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="AI Chat Application",
     description="Comprehensive AI chat with memory, research, and multi-modal capabilities",
-    version="1.0.0",
+    version=APP_VERSION,
 )
 
 # ========= CORS =========
@@ -397,30 +397,34 @@ async def serve_generated_image(filename: str, request: Request):
     import re
     if not re.match(r'^[a-f0-9]{8,64}\.(png|jpg|jpeg|webp|gif|mp4|mov|webm|mkv|m4v)$', filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
+    from src.auth_helpers import require_user
+
+    _user = require_user(request)
     img_path = Path("data/generated_images") / filename
     if not img_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
     # SECURITY: filename is the only key, so anyone who knows / guesses a
     # 12-hex content hash could pull another user's image bytes. Require
     # auth and verify ownership via the gallery row (when one exists).
-    try:
-        from src.auth_helpers import get_current_user
-        from core.database import SessionLocal as _SL, GalleryImage as _GI
-        _user = get_current_user(request)
-        if _user:
+    from core.database import SessionLocal as _SL, GalleryImage as _GI
+
+    if _user:
+        _db = None
+        try:
             _db = _SL()
-            try:
-                _row = _db.query(_GI).filter(_GI.filename == filename).first()
-                # Generated-but-not-yet-imported images have no row → allow.
-                # Row exists with a different owner → 404 (don't confirm existence).
-                if _row is not None and _row.owner and _row.owner != _user:
-                    raise HTTPException(status_code=404, detail="Image not found")
-            finally:
+            _row = _db.query(_GI).filter(_GI.filename == filename).first()
+            # Generated-but-not-yet-imported images have no row -> allow.
+            # Row exists with a different owner -> 404 (don't confirm existence).
+            if _row is not None and _row.owner and _row.owner != _user:
+                raise HTTPException(status_code=404, detail="Image not found")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.warning("Generated image ownership lookup failed", exc_info=False)
+            raise HTTPException(status_code=503, detail="Image ownership check unavailable")
+        finally:
+            if _db is not None:
                 _db.close()
-    except HTTPException:
-        raise
-    except Exception:
-        pass
     ext = filename.rsplit('.', 1)[-1].lower()
     mime = {
         "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
