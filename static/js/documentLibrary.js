@@ -2632,7 +2632,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
         const data = await res.json();
         _researchItems = data.research || data || [];
       } catch (e) {
-        grid.innerHTML = `<div class="hwfit-loading">Failed to load: ${e.message}</div>`;
+        grid.innerHTML = `<div class="hwfit-loading">Failed to load: ${_esc(e.message || e)}</div>`;
         return;
       }
       _renderResearchGrid();
@@ -3165,13 +3165,17 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       createBtn.addEventListener('click', async () => {
         // Create a new session, then create a blank document in it
         try {
-          const sRes = await fetch('/api/session', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Untitled Document' }) });
+          const fd = new FormData();
+          fd.append('name', 'Untitled Document');
+          fd.append('skip_validation', 'true');
+          const sRes = await fetch(`${API_BASE}/api/session`, { method: 'POST', credentials: 'same-origin', body: fd });
+          if (!sRes.ok) throw new Error('Session create failed');
           const sData = await sRes.json();
-          const sessionId = sData.session_id;
+          const sessionId = sData.id;
           await _createDocument(sessionId);
           // Close library and open the new session
           closeLibrary();
-          if (window.sessionsModule) window.sessionsModule.loadSession(sessionId);
+          if (window.sessionModule) await window.sessionModule.selectSession(sessionId);
           setTimeout(() => _openPanel(), 300);
         } catch (e) {
           console.error('Failed to create document:', e);
