@@ -420,7 +420,7 @@ function _initModelPickerDropdown() {
         header.className = 'mp-provider-header';
         header.innerHTML =
           `<svg class="mp-provider-chevron${isCollapsed ? ' collapsed' : ''}" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`
-          + `<span class="mp-provider-name">${_providerDisplayName(provider)}</span>`
+          + `<span class="mp-provider-name">${uiModule.esc(_providerDisplayName(provider))}</span>`
           + `<span class="mp-provider-count">${models.length}</span>`;
         header.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -688,7 +688,7 @@ export function updateModelPicker() {
   const displayName = modelId ? modelId.split('/').pop() : 'Select model';
   const logo = modelId ? providerLogo(modelId) : null;
   if (logo) {
-    label.innerHTML = '<span class="model-picker-logo">' + logo + '</span> ' + displayName;
+    label.innerHTML = '<span class="model-picker-logo">' + logo + '</span> ' + uiModule.esc(displayName);
   } else {
     label.textContent = displayName;
   }

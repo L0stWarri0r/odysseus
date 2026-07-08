@@ -900,7 +900,7 @@ import * as Modals from './modalManager.js';
       });
     } catch (e) {
       overlay.querySelector('#pdf-export-body').innerHTML =
-        `<div style="color:#c00;">Failed to load preview: ${(e && e.message) || e}</div>`;
+        `<div style="color:#c00;">Failed to load preview: ${_esc((e && e.message) || e)}</div>`;
     }
   }
 
