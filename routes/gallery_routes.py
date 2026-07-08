@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
-from src.auth_helpers import get_current_user, owner_filter, require_privilege
+from src.auth_helpers import get_current_user, require_privilege, owner_filter
 
 from routes.gallery_helpers import (
     GalleryPatch, _extract_exif, _image_to_dict, _owner_filter, _human_size,
