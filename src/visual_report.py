@@ -113,6 +113,8 @@ def _sanitize_report_html(report_html: str) -> str:
     """Strip script-capable raw HTML that Python-Markdown preserves."""
     soup = BeautifulSoup(report_html, "html.parser")
     for tag in list(soup.find_all(True)):
+        if tag.attrs is None:
+            continue
         if tag.name and tag.name.lower() in _REPORT_UNSAFE_TAGS:
             tag.decompose()
             continue
