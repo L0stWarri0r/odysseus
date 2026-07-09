@@ -55,7 +55,7 @@ def test_visual_report_sanitizes_raw_markdown_html_and_source_urls():
             {"url": "https://example.com/path", "title": "Good Source"},
         ],
         stats={},
-        session_id="rp-test",
+        session_id=None,
     )
     soup = BeautifulSoup(html, "html.parser")
     content = soup.select_one("main.content")
