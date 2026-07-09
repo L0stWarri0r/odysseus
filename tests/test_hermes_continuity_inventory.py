@@ -8,6 +8,27 @@ from routes.hermes_routes import setup_hermes_routes
 from src.hermes_control.continuity import build_continuity_inventory
 
 
+class FakeAuthManager:
+    is_configured = True
+
+    def is_admin(self, username):
+        return username == "admin"
+
+
+def _client_with_user(username=None):
+    app = FastAPI()
+    app.state.auth_manager = FakeAuthManager()
+
+    @app.middleware("http")
+    async def _stamp_user(request, call_next):
+        if username is not None:
+            request.state.current_user = username
+        return await call_next(request)
+
+    app.include_router(setup_hermes_routes())
+    return TestClient(app)
+
+
 def _create_hermes_state_db(path: Path) -> None:
     con = sqlite3.connect(path)
     con.execute(
@@ -98,9 +119,7 @@ def test_build_continuity_inventory_handles_missing_home(tmp_path):
 def test_hermes_continuity_inventory_route_uses_env_home(tmp_path, monkeypatch):
     hermes_home = _sample_hermes_home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    app = FastAPI()
-    app.include_router(setup_hermes_routes())
-    client = TestClient(app)
+    client = _client_with_user("admin")
 
     response = client.get("/api/hermes/continuity/inventory")
 
@@ -109,3 +128,11 @@ def test_hermes_continuity_inventory_route_uses_env_home(tmp_path, monkeypatch):
     assert data["hermes_home"] == str(hermes_home)
     assert data["state_db"]["session_count"] == 2
     assert data["content_returned"] is False
+
+
+def test_hermes_continuity_inventory_route_requires_admin(tmp_path, monkeypatch):
+    hermes_home = _sample_hermes_home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert _client_with_user(None).get("/api/hermes/continuity/inventory").status_code == 403
+    assert _client_with_user("nonadmin").get("/api/hermes/continuity/inventory").status_code == 403
