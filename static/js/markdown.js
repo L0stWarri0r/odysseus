@@ -99,7 +99,7 @@ function sanitizeAllowedHtml(html) {
   const raw = String(html == null ? '' : html);
   // Non-browser context (e.g. a future SSR/Node import): fail closed by
   // escaping rather than trusting the markup.
-  if (typeof document === 'undefined') return escapeHtml(raw);
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return escapeHtml(raw);
 
   // Sanitize to a fixpoint. Re-parsing the serialized output can mutate the
   // tree (the basis of mutation-XSS), so re-clean until it stops changing.

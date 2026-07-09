@@ -99,3 +99,15 @@ def test_table_separator_row_not_rendered_as_data(node_available):
     assert "<th" in html
     assert "<td" in html
     assert "---" not in html
+
+
+def test_raw_html_fails_closed_without_browser_template(node_available):
+    html = _run_markdown_case(
+        '<a href="javascript:alert(1)" onclick="alert(2)">bad</a>\n\n'
+        '<details><summary>x</summary><svg><script>alert(3)</script></svg></details>'
+    )
+
+    assert "<a " not in html
+    assert "<details" not in html
+    assert "<svg" not in html
+    assert "<script" not in html

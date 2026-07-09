@@ -64,7 +64,70 @@ def _md_to_html(md_text: str) -> str:
         r'<a target="_blank" rel="noopener noreferrer" href="\1',
         result,
     )
-    return result
+    return _sanitize_report_html(result)
+
+
+_REPORT_UNSAFE_TAGS = {
+    "script",
+    "iframe",
+    "object",
+    "embed",
+    "link",
+    "meta",
+    "style",
+    "base",
+    "form",
+    "input",
+    "button",
+    "textarea",
+    "select",
+    "option",
+    "svg",
+    "math",
+    "template",
+}
+_REPORT_URL_ATTRS = {
+    "href",
+    "src",
+    "xlink:href",
+    "action",
+    "formaction",
+    "background",
+    "poster",
+}
+
+
+def _is_safe_report_url(raw_url: str) -> bool:
+    url = str(raw_url or "").strip()
+    if not url:
+        return False
+    if url.startswith("#"):
+        return re.fullmatch(r"#[A-Za-z0-9_-]*", url) is not None
+
+    compact = re.sub(r"[\x00-\x20]+", "", url)
+    parsed = urlparse(compact)
+    return parsed.scheme in {"http", "https"}
+
+
+def _sanitize_report_html(report_html: str) -> str:
+    """Strip script-capable raw HTML that Python-Markdown preserves."""
+    soup = BeautifulSoup(report_html, "html.parser")
+    for tag in list(soup.find_all(True)):
+        if tag.attrs is None:
+            continue
+        if tag.name and tag.name.lower() in _REPORT_UNSAFE_TAGS:
+            tag.decompose()
+            continue
+        for attr, value in list(tag.attrs.items()):
+            attr_name = attr.lower()
+            if attr_name.startswith("on") or attr_name in {"srcdoc", "style"}:
+                del tag.attrs[attr]
+                continue
+            if attr_name in _REPORT_URL_ATTRS:
+                attr_value = value[0] if isinstance(value, list) else value
+                if not _is_safe_report_url(str(attr_value)):
+                    del tag.attrs[attr]
+    return str(soup)
 
 
 def _extract_headings(md_text: str) -> List[Dict[str, str]]:
@@ -1783,22 +1846,32 @@ def generate_visual_report(
     if sources:
         items = []
         for i, s in enumerate(sources, 1):
-            url = s.get("url", "")
+            url = str(s.get("url", "") or "")
+            safe_url = url if _is_safe_report_url(url) else ""
             title = html.escape(s.get("title", "") or url)
             domain = ""
-            try:
-                domain = urlparse(url).hostname or ""
-                if domain.startswith("www."):
-                    domain = domain[4:]
-            except Exception:
-                domain = url
-            items.append(
-                f'<a href="{html.escape(url)}" target="_blank" rel="noopener noreferrer">'
-                f'<span class="snum">{i}.</span>'
-                f'<span>{title}</span>'
-                f'<span class="sdomain">{html.escape(domain)}</span>'
-                f'</a>'
-            )
+            if safe_url:
+                try:
+                    domain = urlparse(safe_url).hostname or ""
+                    if domain.startswith("www."):
+                        domain = domain[4:]
+                except Exception:
+                    domain = ""
+                items.append(
+                    f'<a href="{html.escape(safe_url)}" target="_blank" rel="noopener noreferrer">'
+                    f'<span class="snum">{i}.</span>'
+                    f'<span>{title}</span>'
+                    f'<span class="sdomain">{html.escape(domain)}</span>'
+                    f'</a>'
+                )
+            else:
+                items.append(
+                    '<span class="source-disabled">'
+                    f'<span class="snum">{i}.</span>'
+                    f'<span>{title}</span>'
+                    '<span class="sdomain"></span>'
+                    '</span>'
+                )
         sources_html = (
             '<div class="sources-panel">\n'
             '<details>\n'
