@@ -73,7 +73,7 @@ def _ssh_base_argv(host: str, ssh_port: str | None) -> list[str]:
     """Build an ssh argv prefix for remote probes without local-shell parsing."""
     if not host or not str(host).strip() or str(host).lstrip().startswith("-"):
         raise ValueError("invalid ssh host")
-    argv = ["ssh", "-o", "ConnectTimeout=6", "-o", "StrictHostKeyChecking=no"]
+    argv = ["ssh", "-o", "ConnectTimeout=6", "-o", "StrictHostKeyChecking=accept-new"]
     if ssh_port and str(ssh_port).strip() not in ("", "22"):
         port = str(ssh_port).strip()
         if not _SSH_PORT_RE.match(port) or not (1 <= int(port) <= 65535):
@@ -748,6 +748,7 @@ def setup_shell_routes() -> APIRouter:
     async def shell_exec(request: Request, req: ShellExecRequest) -> Dict[str, Any]:
         """Execute a shell command and return output. Admin only."""
         _require_admin(request)
+        _reject_cross_site(request)
         cmd = req.command.strip()
         if not cmd:
             return {"stdout": "", "stderr": "No command provided", "exit_code": 1}
@@ -760,6 +761,7 @@ def setup_shell_routes() -> APIRouter:
     async def shell_stream(request: Request, req: ShellExecRequest):
         """Execute a shell command and stream output line-by-line via SSE. Admin only."""
         _require_admin(request)
+        _reject_cross_site(request)
         cmd = req.command.strip()
         if not cmd:
             async def empty():
@@ -1036,6 +1038,7 @@ def setup_shell_routes() -> APIRouter:
     async def install_package(request: Request):
         """Install a package via pip. Admin only — pip install is effectively code exec."""
         _require_admin(request)
+        _reject_cross_site(request)
         import sys as _sys
         body = await request.json()
         pip_name = body.get("pip")
@@ -1070,6 +1073,7 @@ def setup_shell_routes() -> APIRouter:
         stuck on a CPU-only llama-server.
         """
         _require_admin(request)
+        _reject_cross_site(request)
         from routes.cookbook_helpers import _llama_cpp_rebuild_cmd
         body = await request.json()
         engine = str(body.get("engine") or "llamacpp").strip()

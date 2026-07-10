@@ -695,6 +695,57 @@ def test_require_admin_allows_when_auth_explicitly_disabled(monkeypatch):
     assert require_admin(_Req()) is None
 
 
+def test_require_admin_internal_token_requires_direct_loopback(monkeypatch):
+    from fastapi import HTTPException
+    from core.middleware import INTERNAL_TOOL_HEADER, INTERNAL_TOOL_TOKEN, require_admin
+
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+
+    class _State:
+        current_user = None
+
+    class _Headers(dict):
+        def get(self, key, default=None):
+            return super().get(key.lower(), default)
+
+    class _Client:
+        def __init__(self, host):
+            self.host = host
+
+    class _AppState:
+        class _Mgr:
+            is_configured = True
+
+            @staticmethod
+            def is_admin(_user):
+                return False
+
+        auth_manager = _Mgr()
+
+    class _App:
+        state = _AppState()
+
+    class _Req:
+        state = _State()
+        app = _App()
+
+        def __init__(self, host, headers=None):
+            self.client = _Client(host)
+            self.headers = _Headers({INTERNAL_TOOL_HEADER.lower(): INTERNAL_TOOL_TOKEN})
+            if headers:
+                self.headers.update({k.lower(): v for k, v in headers.items()})
+
+    assert require_admin(_Req("127.0.0.1")) is None
+
+    with pytest.raises(HTTPException) as remote_exc:
+        require_admin(_Req("203.0.113.10"))
+    assert remote_exc.value.status_code == 403
+
+    with pytest.raises(HTTPException) as proxied_exc:
+        require_admin(_Req("127.0.0.1", {"X-Forwarded-For": "203.0.113.10"}))
+    assert proxied_exc.value.status_code == 403
+
+
 def test_internal_tool_owner_header_logic_requires_known_user():
     """Pin the owner-attribution branch used by app.AuthMiddleware without
     booting the full FastAPI app."""

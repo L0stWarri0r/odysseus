@@ -688,7 +688,7 @@ export function updateModelPicker() {
   const displayName = modelId ? modelId.split('/').pop() : 'Select model';
   const logo = modelId ? providerLogo(modelId) : null;
   if (logo) {
-    label.innerHTML = '<span class="model-picker-logo">' + logo + '</span> ' + displayName;
+    label.innerHTML = '<span class="model-picker-logo">' + logo + '</span> ' + uiModule.esc(displayName);
   } else {
     label.textContent = displayName;
   }
