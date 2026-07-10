@@ -6,6 +6,7 @@ import sessionModule from './sessions.js';
 import spinnerModule from './spinner.js';
 import { makeWindowDraggable } from './windowDrag.js';
 import { snapModalToZone } from './tileManager.js';
+import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 
 var escapeHtml = uiModule.esc;
 
@@ -805,17 +806,17 @@ export function renderMemoryList() {
       const pinItem = document.createElement('div');
       pinItem.className = 'dropdown-item-compact';
       pinItem.innerHTML = `<span class="dropdown-icon">${_pinSvg}</span><span>${memory.pinned ? 'Unpin' : 'Pin'}</span>`;
-      pinItem.addEventListener('click', () => { dropdown.style.display = 'none'; togglePin(memory.id, !memory.pinned); });
+      pinItem.addEventListener('click', () => { dismissOrRemove(dropdown); togglePin(memory.id, !memory.pinned); });
 
       const editItem = document.createElement('div');
       editItem.className = 'dropdown-item-compact';
       editItem.textContent = '✎ Edit';
-      editItem.addEventListener('click', () => { dropdown.style.display = 'none'; startInlineEdit(item, memory); });
+      editItem.addEventListener('click', () => { dismissOrRemove(dropdown); startInlineEdit(item, memory); });
 
       const deleteItem = document.createElement('div');
       deleteItem.className = 'dropdown-item-compact memory-dropdown-delete';
       deleteItem.textContent = '✕ Delete';
-      deleteItem.addEventListener('click', () => { dropdown.style.display = 'none'; deleteMemory(memory.id); });
+      deleteItem.addEventListener('click', () => { dismissOrRemove(dropdown); deleteMemory(memory.id); });
 
       // Select — enters bulk-select mode and pre-selects this memory. Same
       // pattern as the email/documents/skills Select item.
@@ -824,7 +825,7 @@ export function renderMemoryList() {
       selectItem.innerHTML = '<span class="dropdown-icon"><span style="font-size:16px;line-height:1;">●</span></span><span>Select</span>';
       selectItem.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (dropdown.parentNode) dropdown.remove();
+        if (dropdown.parentNode) dismissOrRemove(dropdown);
         if (!selectMode) enterSelectMode();
         selectedIds.add(memory.id);
         updateBulkCount();
@@ -837,7 +838,7 @@ export function renderMemoryList() {
       const cancelItem = document.createElement('div');
       cancelItem.className = 'dropdown-item-compact dropdown-cancel-mobile';
       cancelItem.textContent = '✕ Cancel';
-      cancelItem.addEventListener('click', (e) => { e.stopPropagation(); if (dropdown.parentNode) dropdown.remove(); });
+      cancelItem.addEventListener('click', (e) => { e.stopPropagation(); if (dropdown.parentNode) dismissOrRemove(dropdown); });
 
       dropdown.appendChild(pinItem);
       dropdown.appendChild(selectItem);
@@ -848,7 +849,7 @@ export function renderMemoryList() {
       menuBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         // Close any other open dropdowns
-        document.querySelectorAll('.memory-item-dropdown').forEach(d => d.remove());
+        document.querySelectorAll('.memory-item-dropdown').forEach(d => dismissOrRemove(d));
         const rect = menuBtn.getBoundingClientRect();
         dropdown.style.position = 'fixed';
         dropdown.style.top = rect.bottom + 2 + 'px';
@@ -901,7 +902,7 @@ export function renderMemoryList() {
             dropdown.style.transition = 'transform 0.15s ease, opacity 0.15s ease';
             dropdown.style.transform = 'translateY(120px)';
             dropdown.style.opacity = '0';
-            setTimeout(() => { if (dropdown.parentNode) dropdown.remove(); }, 160);
+            setTimeout(() => { if (dropdown.parentNode) dismissOrRemove(dropdown); }, 160);
           } else {
             dropdown.style.transition = 'transform 0.18s ease, opacity 0.18s ease';
             dropdown.style.transform = '';
@@ -911,6 +912,11 @@ export function renderMemoryList() {
         dropdown.addEventListener('touchstart', _onTS, { passive: true });
         dropdown.addEventListener('touchmove', _onTM, { passive: true });
         dropdown.addEventListener('touchend', _onTE);
+        bindMenuDismiss(
+          dropdown,
+          () => { if (dropdown.parentNode) dropdown.remove(); },
+          (ev) => !dropdown.contains(ev.target) && ev.target !== menuBtn && !menuBtn.contains(ev.target)
+        );
       });
 
       item.appendChild(menuBtn);
@@ -940,9 +946,6 @@ export function renderMemoryList() {
         item.addEventListener('pointerup', _lpCancel);
         item.addEventListener('pointercancel', _lpCancel);
       }
-
-      // Close dropdown on outside click
-      document.addEventListener('click', () => { if (dropdown.parentNode) dropdown.remove(); }, { once: false });
     }
 
     memoryList.appendChild(item);

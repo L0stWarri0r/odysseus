@@ -351,22 +351,24 @@ export async function runServer(code, panel, lang) {
 }
 
 /**
- * Run HTML code in its own popup window
+ * Preview HTML in a sandboxed iframe with scripts disabled.
  */
 export function runHTML(code, panel) {
   panel.innerHTML = '';
 
-  const win = window.open('', '_blank', 'width=800,height=600,menubar=no,toolbar=no,location=no,status=no');
-  if (!win) {
-    showOutput(panel, 'Popup blocked — please allow popups for this site.', true);
-    addCloseBtn(panel);
-    return;
-  }
-  win.document.open();
-  win.document.write(code);
-  win.document.close();
+  const iframe = document.createElement('iframe');
+  iframe.className = 'code-runner-html-preview';
+  iframe.setAttribute('sandbox', '');
+  iframe.style.cssText = 'width:100%;height:360px;border:1px solid var(--border-color,#333);border-radius:8px;background:#fff;';
+  iframe.srcdoc = code;
+  panel.appendChild(iframe);
 
-  showOutput(panel, 'Opened in new window', false);
+  const note = document.createElement('div');
+  note.className = 'code-runner-html-note';
+  note.textContent = 'Rendered in a sandboxed preview. Scripts are disabled.';
+  note.style.cssText = 'font-size:0.75rem;opacity:0.65;padding:6px 2px 0;';
+  panel.appendChild(note);
+
   addCloseBtn(panel);
 }
 

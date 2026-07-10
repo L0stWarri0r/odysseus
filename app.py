@@ -401,12 +401,13 @@ async def serve_generated_image(filename: str, request: Request):
     if not img_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
     # SECURITY: filename is the only key, so anyone who knows / guesses a
-    # 12-hex content hash could pull another user's image bytes. Require
-    # auth and verify ownership via the gallery row (when one exists).
+    # content hash could pull another user's image bytes. Require auth and
+    # verify ownership via the gallery row (when one exists); if that check
+    # errors, fail closed instead of serving the file.
     try:
-        from src.auth_helpers import get_current_user
+        from src.auth_helpers import require_user
         from core.database import SessionLocal as _SL, GalleryImage as _GI
-        _user = get_current_user(request)
+        _user = require_user(request)
         if _user:
             _db = _SL()
             try:
@@ -419,8 +420,9 @@ async def serve_generated_image(filename: str, request: Request):
                 _db.close()
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Generated image authorization failed", exc_info=False)
+        raise HTTPException(status_code=503, detail="Image authorization unavailable") from exc
     ext = filename.rsplit('.', 1)[-1].lower()
     mime = {
         "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",

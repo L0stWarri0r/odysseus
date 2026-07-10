@@ -9,9 +9,11 @@ from typing import List
 from pydantic import BaseModel
 import logging
 
-from core.database import Comparison, SessionLocal
+from core.database import Comparison, ModelEndpoint, SessionLocal
 from core.session_manager import SessionManager
-from src.auth_helpers import get_current_user
+from src.auth_helpers import get_current_user, owner_filter, require_privilege
+from src.endpoint_resolver import normalize_base
+from src.url_safety import check_outbound_url
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,38 @@ class RecordVoteRequest(BaseModel):
     models: List[str]
     winner: str           # model name or "tie"
     is_blind: bool = True
+
+
+def _current_user_is_admin(request: Request, user: str | None) -> bool:
+    if not user:
+        return False
+    auth_mgr = getattr(request.app.state, "auth_manager", None)
+    is_admin = getattr(auth_mgr, "is_admin", None)
+    if not callable(is_admin):
+        return False
+    try:
+        return bool(is_admin(user))
+    except Exception:
+        return False
+
+
+def _endpoint_visible_to_user(db, endpoint: str, request: Request, user: str | None):
+    """Return the registered endpoint matching ``endpoint`` if the user can use it."""
+    ok, reason = check_outbound_url(endpoint)
+    if not ok:
+        raise HTTPException(400, f"Unsafe model endpoint: {reason}")
+
+    base = normalize_base(endpoint)
+    q = db.query(ModelEndpoint).filter(
+        ModelEndpoint.base_url == base,
+        ModelEndpoint.is_enabled == True,  # noqa: E712
+    )
+    if user and not _current_user_is_admin(request, user):
+        q = owner_filter(q, ModelEndpoint, user)
+    match = q.first()
+    if user and not _current_user_is_admin(request, user) and not match:
+        raise HTTPException(403, "Choose a registered model endpoint")
+    return match
 
 
 def setup_compare_routes(session_manager: SessionManager):
@@ -43,13 +77,25 @@ def setup_compare_routes(session_manager: SessionManager):
         Returns the comparison ID and the two session IDs so the client
         can fire two independent SSE streams to /api/chat_stream.
         """
+        user = require_privilege(request, "can_use_agent")
         comp_id = str(uuid.uuid4())
         sid_a = str(uuid.uuid4())
         sid_b = str(uuid.uuid4())
 
+        db = SessionLocal()
+        try:
+            endpoint_rows = {
+                "a": _endpoint_visible_to_user(db, endpoint_a, request, user),
+                "b": _endpoint_visible_to_user(db, endpoint_b, request, user),
+            }
+        finally:
+            db.close()
+
         # Create ephemeral sessions (prefixed [CMP])
-        for sid, model, endpoint in [(sid_a, model_a, endpoint_a), (sid_b, model_b, endpoint_b)]:
-            user = getattr(request.state, 'current_user', None)
+        for key, sid, model, endpoint in [
+            ("a", sid_a, model_a, endpoint_a),
+            ("b", sid_b, model_b, endpoint_b),
+        ]:
             session_manager.create_session(
                 session_id=sid,
                 name=f"[CMP] {model.split('/')[-1]}",
@@ -59,21 +105,12 @@ def setup_compare_routes(session_manager: SessionManager):
                 owner=user,
             )
             # Copy API key from endpoint config
-            db = SessionLocal()
-            try:
-                from core.database import ModelEndpoint
-                from src.endpoint_resolver import build_headers, normalize_base
-                # Find matching endpoint by URL
-                base = normalize_base(endpoint)
-                ep = db.query(ModelEndpoint).filter(
-                    ModelEndpoint.base_url == base
-                ).first()
-                if ep and ep.api_key:
-                    s = session_manager.sessions.get(sid)
-                    if s:
-                        s.headers = build_headers(ep.api_key, ep.base_url)
-            finally:
-                db.close()
+            from src.endpoint_resolver import build_headers
+            ep = endpoint_rows[key]
+            if ep and ep.api_key:
+                s = session_manager.sessions.get(sid)
+                if s:
+                    s.headers = build_headers(ep.api_key, ep.base_url)
 
         # Blind mapping: randomly assign left/right
         blind = str(is_blind).lower() == "true"
