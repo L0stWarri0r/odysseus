@@ -9,7 +9,7 @@ import { splitTableRow } from './markdown/tableRow.js';
 
 var escapeHtml = uiModule.esc;
 
-function safeLinkUrl(rawUrl) {
+export function safeLinkUrl(rawUrl) {
   const url = String(rawUrl || '').trim();
   if (url.startsWith('#')) {
     return /^#[A-Za-z0-9_-]*$/.test(url) ? url : '';
@@ -687,7 +687,8 @@ const markdownModule = {
   hasUnclosedThinkTag,
   extractThinkingBlocks,
   startsWithReasoningPrefix,
-  renderMermaid
+  renderMermaid,
+  safeLinkUrl
 };
 
 export default markdownModule;

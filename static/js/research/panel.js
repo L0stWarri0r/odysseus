@@ -45,6 +45,12 @@ let _settingsCollapsed = false;
 const _SETTINGS_KEY = 'odysseus-research-settings';
 const _COLLAPSE_KEY = 'odysseus-research-settings-collapsed';
 
+function _safeHref(rawUrl) {
+  return (_markdownModule && typeof _markdownModule.safeLinkUrl === 'function')
+    ? _markdownModule.safeLinkUrl(rawUrl)
+    : '';
+}
+
 try { _settingsCollapsed = localStorage.getItem(_COLLAPSE_KEY) === '1'; } catch {}
 
 function _saveSettingsToStorage() {
@@ -1103,8 +1109,9 @@ function _renderResult(job) {
     html += '<div class="research-job-sources">';
     for (const s of job.sources.slice(0, 10)) {
       const title = _esc(s.title || s.url || '');
-      const url = _esc(s.url || '');
-      html += `<a href="${url}" target="_blank" rel="noopener" class="research-source-link">${title}</a>`;
+      const url = _safeHref(s.url || '');
+      const href = url ? _esc(url) : '#';
+      html += `<a href="${href}" target="_blank" rel="noopener" class="research-source-link">${title}</a>`;
     }
     if (job.sources.length > 10) html += `<span class="research-source-more">+${job.sources.length - 10} more</span>`;
     html += '</div>';

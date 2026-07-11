@@ -36,7 +36,7 @@ function _renderSearchResults(data) {
     const card = document.createElement('div');
     card.className = 'compare-search-result';
     const titleLink = document.createElement('a');
-    titleLink.href = r.url || '#';
+    titleLink.href = markdownModule.safeLinkUrl(r.url) || '#';
     titleLink.target = '_blank';
     titleLink.rel = 'noopener';
     titleLink.className = 'search-result-title';
