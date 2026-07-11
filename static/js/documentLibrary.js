@@ -2674,7 +2674,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       const sources = Array.isArray(detail.sources) ? detail.sources : [];
       const sourcesList = sources.slice(0, 12).map((src, i) => {
         const title = _esc(src.title || src.url || `Source ${i + 1}`);
-        const url = src.url || '';
+        const url = markdownModule.safeLinkUrl(src.url || '');
         return url
           ? `<li><a href="${_esc(url)}" target="_blank" rel="noopener">${title}</a></li>`
           : `<li>${title}</li>`;

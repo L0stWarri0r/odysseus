@@ -112,6 +112,7 @@ import * as Modals from './modalManager.js';
   let activeDocId = null;           // currently visible doc
   let _lastSessionId = '';          // session context for "+" button
   const docs = new Map();           // docId -> { id, title, language, content, version, sessionId }
+  let _docPanelAbort = null;        // aborts document-level listeners on close/reopen
 
   const _docOpenKey = (sessionId) => 'odysseus-doc-open-' + sessionId;
   const _docMinimizedKey = (sessionId) => 'odysseus-doc-minimized-' + sessionId;
@@ -3714,6 +3715,8 @@ import * as Modals from './modalManager.js';
 
   export function openPanel() {
     if (isOpen) return;
+    if (_docPanelAbort) _docPanelAbort.abort();
+    _docPanelAbort = new AbortController();
     // Clear any pane/divider still sliding out from a just-fired close so we
     // don't end up with two #doc-editor-pane nodes (and a stale close stripping
     // doc-view). Paired with the isOpen guard in _finishClose above.
@@ -5469,14 +5472,14 @@ import * as Modals from './modalManager.js';
     }
     document.addEventListener('click', () => {
       if (_mdMenuOpen) { closeMdMenu(); overflowWrapper.appendChild(overflowMenu); }
-    });
+    }, _docPanelAbort ? { signal: _docPanelAbort.signal } : undefined);
 
     // Re-check overflow on resize
     let _mdResizeTimer;
     window.addEventListener('resize', () => {
       clearTimeout(_mdResizeTimer);
       _mdResizeTimer = setTimeout(syncMdOverflow, 100);
-    });
+    }, _docPanelAbort ? { signal: _docPanelAbort.signal } : undefined);
 
     // Show toolbar if language is already markdown
     const lang = document.getElementById('doc-language-select')?.value;
@@ -5608,7 +5611,7 @@ import * as Modals from './modalManager.js';
     });
     document.addEventListener('click', () => {
       if (_menuOpen) { closeMenu(); wrapper.appendChild(menu); }
-    });
+    }, _docPanelAbort ? { signal: _docPanelAbort.signal } : undefined);
 
     // Also track when visible buttons are clicked directly
     allBtns.forEach(btn => {
@@ -5639,7 +5642,7 @@ import * as Modals from './modalManager.js';
         : window.innerWidth - e.clientX;
       pane.style.width = Math.max(250, Math.min(width, window.innerWidth * 0.7)) + 'px';
       pane.style.flex = 'none';
-    });
+    }, _docPanelAbort ? { signal: _docPanelAbort.signal } : undefined);
     document.addEventListener('mouseup', () => {
       if (dragging) {
         dragging = false;
@@ -5650,7 +5653,7 @@ import * as Modals from './modalManager.js';
         const ta = document.getElementById('doc-editor-textarea');
         if (ta) updateLineNumbers(ta.value);
       }
-    });
+    }, _docPanelAbort ? { signal: _docPanelAbort.signal } : undefined);
   }
 
   /** Close the editor panel */
@@ -5686,6 +5689,10 @@ import * as Modals from './modalManager.js';
   }
 
   export function closePanel(direction) {
+    if (_docPanelAbort) {
+      _docPanelAbort.abort();
+      _docPanelAbort = null;
+    }
     if (!isOpen) {
       if (direction !== 'down' && Modals.isRegistered('doc-panel')) {
         _minimizedDocId = null;

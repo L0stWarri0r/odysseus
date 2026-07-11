@@ -4,6 +4,7 @@
 
 import uiModule from './ui.js';
 import spinnerModule from './spinner.js';
+import markdownModule from './markdown.js';
 import * as Modals from './modalManager.js';
 import { makeWindowDraggable } from './windowDrag.js';
 import { attachColorPicker } from './colorPicker.js';
@@ -3124,8 +3125,10 @@ function _locHTML(loc) {
   const urlRe = /(https?:\/\/[^\s]+)/gi;
   if (urlRe.test(loc)) {
     return loc.replace(urlRe, (url) => {
-      const safe = _e(url);
-      return `<a href="${safe}" target="_blank" rel="noopener" onclick="event.stopPropagation();">${safe}</a>`;
+      const safe = markdownModule.safeLinkUrl(url);
+      const label = _e(url);
+      if (!safe) return label;
+      return `<a href="${_e(safe)}" target="_blank" rel="noopener" onclick="event.stopPropagation();">${label}</a>`;
     }).replace(/\n/g, '<br>');
   }
   // No URL — link the whole thing to OpenStreetMap.

@@ -10,6 +10,7 @@ import { makeWindowDraggable } from './windowDrag.js';
 const API_BASE = window.location.origin;
 let _open = false;
 let _galleryResizeHandler = null;
+let _detailMenuDismiss = null;
 
 // Auto-refresh gallery when new image is generated
 window.addEventListener('gallery-refresh', () => {
@@ -1501,9 +1502,11 @@ function _openDetail(img) {
     });
     menu.addEventListener('click', () => { _setMenu(false); });
     // Click outside closes the menu.
-    document.addEventListener('click', (e) => {
+    if (_detailMenuDismiss) document.removeEventListener('click', _detailMenuDismiss);
+    _detailMenuDismiss = (e) => {
       if (!menu.hidden && !menu.contains(e.target) && e.target !== menuBtn) _setMenu(false);
-    });
+    };
+    document.addEventListener('click', _detailMenuDismiss);
   }
 
   const _toggleDetailFavorite = async () => {
@@ -2764,6 +2767,10 @@ function _doCloseGallery() {
   }
   _open = false;
   clearTimeout(_searchDebounce);
+  if (_detailMenuDismiss) {
+    document.removeEventListener('click', _detailMenuDismiss);
+    _detailMenuDismiss = null;
+  }
   if (_galleryResizeHandler) {
     window.removeEventListener('resize', _galleryResizeHandler);
     _galleryResizeHandler = null;

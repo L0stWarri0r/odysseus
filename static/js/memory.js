@@ -941,8 +941,8 @@ export function renderMemoryList() {
         item.addEventListener('pointercancel', _lpCancel);
       }
 
-      // Close dropdown on outside click
-      document.addEventListener('click', () => { if (dropdown.parentNode) dropdown.remove(); }, { once: false });
+      // Close dropdown on the next outside click without accumulating handlers.
+      document.addEventListener('click', () => { if (dropdown.parentNode) dropdown.remove(); }, { once: true });
     }
 
     memoryList.appendChild(item);
