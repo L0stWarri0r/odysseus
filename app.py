@@ -402,25 +402,24 @@ async def serve_generated_image(filename: str, request: Request):
         raise HTTPException(status_code=404, detail="Image not found")
     # SECURITY: filename is the only key, so anyone who knows / guesses a
     # 12-hex content hash could pull another user's image bytes. Require
-    # auth and verify ownership via the gallery row (when one exists).
+    # auth when enabled and verify ownership via the gallery row (when one exists).
+    from src.auth_helpers import require_user
+    from core.database import SessionLocal as _SL, GalleryImage as _GI
+    _user = require_user(request)
+    _db = _SL()
     try:
-        from src.auth_helpers import get_current_user
-        from core.database import SessionLocal as _SL, GalleryImage as _GI
-        _user = get_current_user(request)
-        if _user:
-            _db = _SL()
-            try:
-                _row = _db.query(_GI).filter(_GI.filename == filename).first()
-                # Generated-but-not-yet-imported images have no row → allow.
-                # Row exists with a different owner → 404 (don't confirm existence).
-                if _row is not None and _row.owner and _row.owner != _user:
+        _row = _db.query(_GI).filter(_GI.filename == filename).first()
+        # Generated-but-not-yet-imported images have no row → allow.
+        # Row exists with a different owner → 404 (don't confirm existence).
+        if _row is not None:
+            _owner = getattr(_row, "owner", None)
+            if _user:
+                if _owner != _user:
                     raise HTTPException(status_code=404, detail="Image not found")
-            finally:
-                _db.close()
-    except HTTPException:
-        raise
-    except Exception:
-        pass
+            elif _owner:
+                raise HTTPException(status_code=404, detail="Image not found")
+    finally:
+        _db.close()
     ext = filename.rsplit('.', 1)[-1].lower()
     mime = {
         "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",

@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy import or_
 
 from core.database import SessionLocal, ScheduledTask, TaskRun
 from src.auth_helpers import get_current_user
@@ -131,6 +132,28 @@ def _run_to_dict(r: TaskRun) -> dict:
     }
 
 
+def _task_visible_without_user(task: ScheduledTask) -> bool:
+    return getattr(task, "owner", None) in (None, "")
+
+
+def _require_task_owner(task: ScheduledTask, user: Optional[str]) -> None:
+    """Fail closed for direct task access when ownership cannot be proven."""
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if user:
+        if getattr(task, "owner", None) != user:
+            raise HTTPException(404, "Task not found")
+        return
+    if not _task_visible_without_user(task):
+        raise HTTPException(404, "Task not found")
+
+
+def _task_scope_filter(query, user: Optional[str]):
+    if user:
+        return query.filter(ScheduledTask.owner == user)
+    return query.filter(or_(ScheduledTask.owner == None, ScheduledTask.owner == ""))  # noqa: E711
+
+
 def _run_research_id(task: ScheduledTask) -> str:
     if (task.task_type or "llm") == "research" and task.session_id:
         return task.session_id
@@ -178,7 +201,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
     def _owner(request: Request):
         return get_current_user(request)
 
-    async def _generate_task_name(prompt: str) -> str:
+    async def _generate_task_name(prompt: str, user: Optional[str]) -> str:
         """Use LLM to generate a short task name from the prompt."""
         try:
             from src.llm_core import llm_call_async
@@ -188,7 +211,12 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 recent = db.query(DbSession).filter(
                     DbSession.endpoint_url.isnot(None),
                     DbSession.model.isnot(None),
-                ).order_by(DbSession.created_at.desc()).first()
+                )
+                if user:
+                    recent = recent.filter(DbSession.owner == user)
+                else:
+                    recent = recent.filter(or_(DbSession.owner == None, DbSession.owner == ""))  # noqa: E711
+                recent = recent.order_by(DbSession.created_at.desc()).first()
                 if not recent:
                     return prompt[:50].strip()
                 url, model = recent.endpoint_url, recent.model
@@ -233,8 +261,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             q = db.query(ScheduledTask)
-            if user:
-                q = q.filter(ScheduledTask.owner == user)
+            q = _task_scope_filter(q, user)
             if status:
                 q = q.filter(ScheduledTask.status == status)
             tasks = q.order_by(ScheduledTask.created_at.desc()).all()
@@ -352,7 +379,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 from src.builtin_actions import BUILTIN_ACTION_INFO
                 name = BUILTIN_ACTION_INFO.get(req.action, req.action or "Action Task")
             elif req.prompt:
-                name = await _generate_task_name(req.prompt)
+                name = await _generate_task_name(req.prompt, user)
             else:
                 name = "Untitled Task"
 
@@ -434,10 +461,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
             action = task.action or ""
         finally:
             db.close()
@@ -506,10 +530,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
             return _task_to_dict(task)
         finally:
             db.close()
@@ -520,10 +541,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
 
             if req.name is not None:
                 task.name = req.name
@@ -606,10 +624,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
             db.delete(task)
             db.commit()
             return {"ok": True}
@@ -622,10 +637,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
             task.status = "paused"
             db.commit()
             return {"ok": True, "status": "paused"}
@@ -638,10 +650,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
             task.status = "active"
             if (task.trigger_type or "schedule") == "schedule":
                 task.next_run = compute_next_run(
@@ -661,10 +670,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
             defs = HOUSEKEEPING_DEFAULTS.get(task.action) if task.action else None
             if not defs:
                 raise HTTPException(400, "Not a built-in task")
@@ -700,10 +706,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
         finally:
             db.close()
         started = await task_scheduler.run_task_now(task_id, force=force)
@@ -717,10 +720,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
         finally:
             db.close()
         stopped = await task_scheduler.stop_task(task_id)
@@ -738,14 +738,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             q = db.query(TaskRun, ScheduledTask).join(
                 ScheduledTask, TaskRun.task_id == ScheduledTask.id
             )
-            if user:
-                # Strict owner scope — was previously OR'ing in `owner IS NULL`
-                # rows for "legacy single-user" back-compat, but that leaks any
-                # legacy/migrated task's full result text to every authenticated
-                # user. _migrate_assign_legacy_owner runs on startup to claim
-                # legacy rows for the admin, so the OR-NULL path is no longer
-                # needed for any sane deploy.
-                q = q.filter(ScheduledTask.owner == user)
+            q = _task_scope_filter(q, user)
             # Pull a little extra before de-duping. When auth is bypassed on a
             # local browser session, legacy/default tasks from multiple owners
             # can be visible together; the built-in urgent-email scanner then
@@ -795,10 +788,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
             runs = db.query(TaskRun).filter(TaskRun.task_id == task_id)\
                 .order_by(TaskRun.started_at.desc())\
                 .offset(offset).limit(limit).all()
@@ -895,10 +885,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
+            _require_task_owner(task, user)
             task.webhook_token = secrets.token_urlsafe(32)
             db.commit()
             return {"ok": True, "webhook_token": task.webhook_token}
