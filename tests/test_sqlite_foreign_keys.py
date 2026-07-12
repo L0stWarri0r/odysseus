@@ -36,3 +36,16 @@ def test_sqlite_foreign_keys_cascade():
     
     db.close()
 
+
+def test_sqlite_file_connections_enable_wal_and_busy_timeout(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'app.db'}",
+        connect_args={"check_same_thread": False},
+    )
+
+    with engine.connect() as conn:
+        journal_mode = conn.exec_driver_sql("PRAGMA journal_mode").scalar()
+        busy_timeout = conn.exec_driver_sql("PRAGMA busy_timeout").scalar()
+
+    assert journal_mode.lower() == "wal"
+    assert busy_timeout == 5000

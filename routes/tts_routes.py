@@ -5,14 +5,17 @@ TTS API routes — multi-provider (local Kokoro, API endpoint, browser).
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import logging
 
 logger = logging.getLogger(__name__)
 
+MAX_TTS_TEXT_LENGTH = 8192
+
+
 class TTSRequest(BaseModel):
-    text: str
-    format: str = "audio"  # "audio" or "base64"
+    text: str = Field(..., min_length=1, max_length=MAX_TTS_TEXT_LENGTH)
+    format: str = Field("audio", pattern="^(audio|base64)$")  # "audio" or "base64"
 
 def setup_tts_routes(tts_service):
     """Setup TTS routes with the provided TTS service"""
