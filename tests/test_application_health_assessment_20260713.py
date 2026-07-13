@@ -74,7 +74,7 @@ def test_document_tabs_escape_user_controlled_labels():
         "    // Wire scroll arrows",
     )
 
-    assert "const safeId = uiModule.esc(id);" in block
+    assert "const safeId = uiModule.esc(String(id));" in block
     assert "const safeTitle = uiModule.esc(title);" in block
     assert "const safeShortTitle = uiModule.esc(shortTitle);" in block
     assert 'title="${safeTitle}"' in block

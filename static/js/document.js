@@ -274,7 +274,7 @@ import * as Modals from './modalManager.js';
       const isActive = id === activeDocId;
       const title = doc.title || 'Untitled';
       const shortTitle = title.length > 24 ? title.slice(0, 22) + '...' : title;
-      const safeId = uiModule.esc(id);
+      const safeId = uiModule.esc(String(id));
       const safeTitle = uiModule.esc(title);
       const safeShortTitle = uiModule.esc(shortTitle);
       const menuBtn = `<button class="doc-tab-menu-btn" data-doc-id="${safeId}" title="Document actions"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2.5"/><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="19" r="2.5"/></svg></button>`;
