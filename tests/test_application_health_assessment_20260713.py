@@ -34,11 +34,11 @@ def test_research_endpoint_selection_is_owner_scoped():
     start_block = _between(
         source,
         '@router.post("/api/research/start")',
-        "@router.get(\"/api/research/status/{session_id}\")",
+        '@router.get("/api/research/stream/{session_id}")',
     )
     spinoff_block = _between(
         source,
-        '@router.post("/api/research/{session_id}/spinoff")',
+        '@router.post("/api/research/spinoff/{session_id}")',
         '    return router',
     )
 
