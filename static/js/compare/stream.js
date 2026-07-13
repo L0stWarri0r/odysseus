@@ -28,6 +28,17 @@ function _formatMs(ms) {
   return (ms / 1000).toFixed(1) + 's';
 }
 
+function _safeSearchResultHref(rawUrl) {
+  const url = String(rawUrl || '').trim();
+  try {
+    const parsed = new URL(url, window.location.origin);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
+  } catch (_) {
+    // Invalid or dangerous URLs are rendered as inert links below.
+  }
+  return '#';
+}
+
 /** Build a DOM container of search-result cards from a search response. Returns an HTMLElement. */
 function _renderSearchResults(data) {
   const container = document.createElement('div');
@@ -36,7 +47,7 @@ function _renderSearchResults(data) {
     const card = document.createElement('div');
     card.className = 'compare-search-result';
     const titleLink = document.createElement('a');
-    titleLink.href = r.url || '#';
+    titleLink.href = _safeSearchResultHref(r.url);
     titleLink.target = '_blank';
     titleLink.rel = 'noopener';
     titleLink.className = 'search-result-title';
