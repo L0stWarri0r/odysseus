@@ -404,23 +404,25 @@ async def serve_generated_image(filename: str, request: Request):
     # 12-hex content hash could pull another user's image bytes. Require
     # auth and verify ownership via the gallery row (when one exists).
     try:
-        from src.auth_helpers import get_current_user
+        from src.auth_helpers import effective_user, require_user
         from core.database import SessionLocal as _SL, GalleryImage as _GI
-        _user = get_current_user(request)
+        require_user(request)
+        _user = effective_user(request)
         if _user:
             _db = _SL()
             try:
                 _row = _db.query(_GI).filter(_GI.filename == filename).first()
                 # Generated-but-not-yet-imported images have no row → allow.
                 # Row exists with a different owner → 404 (don't confirm existence).
-                if _row is not None and _row.owner and _row.owner != _user:
+                if _row is not None and _row.owner != _user:
                     raise HTTPException(status_code=404, detail="Image not found")
             finally:
                 _db.close()
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Generated image ownership check failed for {filename}: {e}")
+        raise HTTPException(status_code=503, detail="Image ownership check unavailable")
     ext = filename.rsplit('.', 1)[-1].lower()
     mime = {
         "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
