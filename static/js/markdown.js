@@ -695,7 +695,7 @@ export default markdownModule;
 // Mermaid is loaded async so it cannot delay the app shell.
 function initMermaid() {
   if (!window.mermaid || window.__odysseusMermaidReady) return;
-  window.mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
+  window.mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
   window.__odysseusMermaidReady = true;
 }
 window.odysseusInitMermaid = initMermaid;
