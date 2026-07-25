@@ -83,7 +83,14 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+      // Only prune Odysseus-owned caches. Deleting unrelated origin caches
+      // (other apps on the same origin, or user-created Cache Storage) is
+      // broader than the PWA reset contract advertised in admin UI.
+      Promise.all(
+        keys
+          .filter(k => k.startsWith('odysseus-') && k !== CACHE_NAME)
+          .map(k => caches.delete(k))
+      )
     ).then(() => self.clients.claim())
   );
 });

@@ -197,11 +197,16 @@ def try_fallback_endpoint(sess, session_id: str) -> dict | None:
     from src.endpoint_resolver import build_chat_url, build_headers, build_models_url, normalize_base
 
     current_url = sess.endpoint_url or ""
+    owner = getattr(sess, "owner", None)
     db = SessionLocal()
     try:
-        endpoints = db.query(ModelEndpoint).filter(
+        q = db.query(ModelEndpoint).filter(
             ModelEndpoint.is_enabled == True
-        ).all()
+        )
+        if owner:
+            from src.auth_helpers import owner_filter
+            q = owner_filter(q, ModelEndpoint, owner)
+        endpoints = q.all()
     finally:
         db.close()
 

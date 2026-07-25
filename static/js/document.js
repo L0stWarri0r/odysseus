@@ -274,18 +274,21 @@ import * as Modals from './modalManager.js';
       const isActive = id === activeDocId;
       const title = doc.title || 'Untitled';
       const shortTitle = title.length > 24 ? title.slice(0, 22) + '...' : title;
-      const menuBtn = `<button class="doc-tab-menu-btn" data-doc-id="${id}" title="Document actions"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2.5"/><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="19" r="2.5"/></svg></button>`;
+      const safeId = uiModule.esc(String(id));
+      const safeTitle = uiModule.esc(title);
+      const safeShortTitle = uiModule.esc(shortTitle);
+      const menuBtn = `<button class="doc-tab-menu-btn" data-doc-id="${safeId}" title="Document actions"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2.5"/><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="19" r="2.5"/></svg></button>`;
       const ver = doc.version || doc.version_count || 1;
-      const verChip = `<span class="doc-tab-version" data-doc-id="${id}" title="Version history">v${ver}</span>`;
+      const verChip = `<span class="doc-tab-version" data-doc-id="${safeId}" title="Version history">v${uiModule.esc(String(ver))}</span>`;
       // Language icon before the title — same family as the meta-line / picker
       // icons. Hidden via :empty CSS when the doc has no useful language.
       const lic = (doc.language && doc.language !== 'text')
         ? langIcon(doc.language, 12, { style: 'opacity:0.65;flex-shrink:0;color:currentColor;margin-right:4px;' })
         : '';
       const langChip = `<span class="doc-tab-lang">${lic}</span>`;
-      html += `<div class="doc-tab${isActive ? ' active' : ''}" draggable="true" data-doc-id="${id}" title="${title}">
-        ${verChip}${langChip}<span class="doc-tab-title">${shortTitle}</span>
-        <button class="doc-tab-close" data-doc-id="${id}" title="Unlink from chat (kept in the Library)">&times;</button>
+      html += `<div class="doc-tab${isActive ? ' active' : ''}" draggable="true" data-doc-id="${safeId}" title="${safeTitle}">
+        ${verChip}${langChip}<span class="doc-tab-title">${safeShortTitle}</span>
+        <button class="doc-tab-close" data-doc-id="${safeId}" title="Unlink from chat (kept in the Library)">&times;</button>
       </div>`;
     }
     // Empty state (panel open, no doc yet): show a ghost "Untitled" tab so it's
