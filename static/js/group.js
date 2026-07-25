@@ -91,13 +91,13 @@ function _initGroupTab() {
     charSel.className = 'preset-input';
     charSel.style.cssText = 'font-size:11px;flex:1;height:26px;';
     charSel.innerHTML = '<option value="">Empty...</option>' +
-      characters.map(c => '<option value="' + c.id + '">' + uiModule.esc(c.name) + '</option>').join('');
+      characters.map(c => '<option value="' + uiModule.esc(c.id) + '">' + uiModule.esc(c.name) + '</option>').join('');
 
     const modelSel = document.createElement('select');
     modelSel.className = 'preset-input';
     modelSel.style.cssText = 'font-size:11px;flex:1;height:26px;';
     modelSel.innerHTML = '<option value="">Model…</option>' +
-      models.map(m => '<option value="' + m.mid + '">' + uiModule.esc(m.display) + '</option>').join('');
+      models.map(m => '<option value="' + uiModule.esc(m.mid) + '">' + uiModule.esc(m.display) + '</option>').join('');
 
     // Auto-add when model is selected
     modelSel.addEventListener('change', () => {
@@ -489,7 +489,7 @@ export async function showModelPicker() {
         sel.style.cssText = 'font-size:11px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);max-width:140px;';
         let optsHtml = '<option value="">No character</option>';
         characters.forEach(c => {
-          optsHtml += `<option value="${c.id}">${uiModule.esc(c.name)}</option>`;
+          optsHtml += `<option value="${uiModule.esc(c.id)}">${uiModule.esc(c.name)}</option>`;
         });
         sel.innerHTML = optsHtml;
         sel.addEventListener('change', () => {
@@ -676,7 +676,7 @@ function _createGroupBubble(model, box) {
   // Role label — use character name if assigned, otherwise model name
   const roleLabel = model._groupName || (model.character ? model.character.characterName : chatRenderer.shortModel(model.mid));
   const roleTs = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  wrap.innerHTML = `<div class="role">${roleLabel} <span class="role-timestamp">${roleTs}</span></div><div class="body"></div>`;
+  wrap.innerHTML = `<div class="role">${uiModule.esc(roleLabel)} <span class="role-timestamp">${roleTs}</span></div><div class="body"></div>`;
   chatRenderer.applyModelColor(wrap.querySelector('.role'), model.mid);
 
   // Spinner — identical to chat.js line 3062

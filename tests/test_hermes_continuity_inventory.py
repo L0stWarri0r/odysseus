@@ -98,7 +98,21 @@ def test_build_continuity_inventory_handles_missing_home(tmp_path):
 def test_hermes_continuity_inventory_route_uses_env_home(tmp_path, monkeypatch):
     hermes_home = _sample_hermes_home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class FakeAuthManager:
+        is_configured = True
+
+        def is_admin(self, username):
+            return username == "admin"
+
     app = FastAPI()
+    app.state.auth_manager = FakeAuthManager()
+
+    @app.middleware("http")
+    async def _stamp_user(request, call_next):
+        request.state.current_user = "admin"
+        return await call_next(request)
+
     app.include_router(setup_hermes_routes())
     client = TestClient(app)
 
@@ -109,3 +123,49 @@ def test_hermes_continuity_inventory_route_uses_env_home(tmp_path, monkeypatch):
     assert data["hermes_home"] == str(hermes_home)
     assert data["state_db"]["session_count"] == 2
     assert data["content_returned"] is False
+
+
+def test_hermes_continuity_inventory_route_requires_admin(tmp_path, monkeypatch):
+    hermes_home = _sample_hermes_home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class FakeAuthManager:
+        is_configured = True
+
+        def is_admin(self, username):
+            return username == "admin"
+
+    def _client(username=None):
+        app = FastAPI()
+        app.state.auth_manager = FakeAuthManager()
+
+        @app.middleware("http")
+        async def _stamp_user(request, call_next):
+            if username is not None:
+                request.state.current_user = username
+            return await call_next(request)
+
+        app.include_router(setup_hermes_routes())
+        return TestClient(app)
+
+    assert _client(None).get("/api/hermes/continuity/inventory").status_code == 403
+    assert _client("nonadmin").get("/api/hermes/continuity/inventory").status_code == 403
+    assert _client("admin").get("/api/hermes/continuity/inventory").status_code == 200
+
+
+def test_build_continuity_inventory_skips_outside_base_paths(tmp_path):
+    hermes_home = _sample_hermes_home(tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text("secret outside content", encoding="utf-8")
+    link = hermes_home / "user-profile" / "escape.md"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        # Some environments disallow symlinks; skip without failing the suite.
+        return
+
+    inventory = build_continuity_inventory(hermes_home)
+    returned_paths = [item["relative_path"] for item in inventory["profile_markdown_files"]]
+    assert "escape.md" not in returned_paths
+    assert str(outside) not in str(inventory)
+    assert "secret outside content" not in str(inventory)

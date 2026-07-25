@@ -11,7 +11,7 @@ import logging
 
 from core.database import Comparison, SessionLocal
 from core.session_manager import SessionManager
-from src.auth_helpers import get_current_user
+from src.auth_helpers import get_current_user, owner_filter
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +47,39 @@ def setup_compare_routes(session_manager: SessionManager):
         sid_a = str(uuid.uuid4())
         sid_b = str(uuid.uuid4())
 
+        user = get_current_user(request)
+
+        def _resolve_compare_endpoint(endpoint: str):
+            from core.database import ModelEndpoint
+            from routes.session_routes import _current_user_is_admin
+            from src.endpoint_resolver import build_headers, normalize_base
+
+            base = normalize_base(endpoint)
+            db = SessionLocal()
+            try:
+                q = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
+                if user:
+                    q = owner_filter(q, ModelEndpoint, user)
+                ep = None
+                for candidate in q.all():
+                    if normalize_base(candidate.base_url or "") == base:
+                        ep = candidate
+                        break
+                if user and not _current_user_is_admin(request, user) and ep is None:
+                    raise HTTPException(403, "Choose a registered model endpoint")
+                if ep and ep.api_key:
+                    return build_headers(ep.api_key, ep.base_url)
+                return {}
+            finally:
+                db.close()
+
+        resolved_headers = {
+            sid_a: _resolve_compare_endpoint(endpoint_a),
+            sid_b: _resolve_compare_endpoint(endpoint_b),
+        }
+
         # Create ephemeral sessions (prefixed [CMP])
         for sid, model, endpoint in [(sid_a, model_a, endpoint_a), (sid_b, model_b, endpoint_b)]:
-            user = getattr(request.state, 'current_user', None)
             session_manager.create_session(
                 session_id=sid,
                 name=f"[CMP] {model.split('/')[-1]}",
@@ -58,22 +88,9 @@ def setup_compare_routes(session_manager: SessionManager):
                 rag=False,
                 owner=user,
             )
-            # Copy API key from endpoint config
-            db = SessionLocal()
-            try:
-                from core.database import ModelEndpoint
-                from src.endpoint_resolver import build_headers, normalize_base
-                # Find matching endpoint by URL
-                base = normalize_base(endpoint)
-                ep = db.query(ModelEndpoint).filter(
-                    ModelEndpoint.base_url == base
-                ).first()
-                if ep and ep.api_key:
-                    s = session_manager.sessions.get(sid)
-                    if s:
-                        s.headers = build_headers(ep.api_key, ep.base_url)
-            finally:
-                db.close()
+            s = session_manager.sessions.get(sid)
+            if s and resolved_headers.get(sid):
+                s.headers = resolved_headers[sid]
 
         # Blind mapping: randomly assign left/right
         blind = str(is_blind).lower() == "true"
