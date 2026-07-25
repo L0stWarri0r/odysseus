@@ -178,17 +178,21 @@ def setup_task_routes(task_scheduler) -> APIRouter:
     def _owner(request: Request):
         return get_current_user(request)
 
-    async def _generate_task_name(prompt: str) -> str:
+    async def _generate_task_name(prompt: str, owner: Optional[str] = None) -> str:
         """Use LLM to generate a short task name from the prompt."""
         try:
             from src.llm_core import llm_call_async
             from core.database import Session as DbSession
             db = SessionLocal()
             try:
-                recent = db.query(DbSession).filter(
+                q = db.query(DbSession).filter(
                     DbSession.endpoint_url.isnot(None),
                     DbSession.model.isnot(None),
-                ).order_by(DbSession.created_at.desc()).first()
+                )
+                # Never reuse another user's endpoint credentials for naming.
+                if owner:
+                    q = q.filter(DbSession.owner == owner)
+                recent = q.order_by(DbSession.created_at.desc()).first()
                 if not recent:
                     return prompt[:50].strip()
                 url, model = recent.endpoint_url, recent.model
@@ -352,7 +356,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 from src.builtin_actions import BUILTIN_ACTION_INFO
                 name = BUILTIN_ACTION_INFO.get(req.action, req.action or "Action Task")
             elif req.prompt:
-                name = await _generate_task_name(req.prompt)
+                name = await _generate_task_name(req.prompt, owner=user)
             else:
                 name = "Untitled Task"
 
@@ -463,12 +467,23 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         try:
             for table in tables:
                 try:
-                    if table == "email_tags" and user:
+                    cols = {
+                        r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                    }
+                    if "owner" in cols and user:
                         before = conn.execute(
-                            "SELECT COUNT(*) FROM email_tags WHERE owner = ? OR owner = ''",
+                            f"SELECT COUNT(*) FROM {table} WHERE owner = ? OR owner = ''",
                             (user,),
                         ).fetchone()[0]
-                        conn.execute("DELETE FROM email_tags WHERE owner = ? OR owner = ''", (user,))
+                        conn.execute(
+                            f"DELETE FROM {table} WHERE owner = ? OR owner = ''",
+                            (user,),
+                        )
+                    elif user:
+                        # Tables without an owner column cannot be safely scoped
+                        # in multi-user mode — refuse the global wipe.
+                        cleared[table] = 0
+                        continue
                     else:
                         before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                         conn.execute(f"DELETE FROM {table}")
@@ -481,15 +496,9 @@ def setup_task_routes(task_scheduler) -> APIRouter:
 
         removed_files = 0
         if action == "check_email_urgency":
-            cache_dir = Path("data/email_urgency_cache")
-            if cache_dir.exists():
-                for child in cache_dir.glob("*.json"):
-                    try:
-                        child.unlink()
-                        removed_files += 1
-                    except Exception:
-                        pass
+            from core.database import EmailAccount as _EA
             owner_slug = "".join(c if (c.isalnum() or c in "-_.@") else "_" for c in (user or "default"))
+            # Only remove urgency state for this owner.
             for state_path in [Path(f"data/email_urgency_state_{owner_slug}.json")]:
                 try:
                     if state_path.exists():
@@ -497,6 +506,30 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                         removed_files += 1
                 except Exception:
                     pass
+            # Cache files are keyed by email account id — only wipe accounts
+            # belonging to this user (or all accounts in single-user mode).
+            cache_dir = Path("data/email_urgency_cache")
+            if cache_dir.exists():
+                account_ids = set()
+                _adb = SessionLocal()
+                try:
+                    q = _adb.query(_EA.id)
+                    if user:
+                        from sqlalchemy import or_ as _or, and_ as _and
+                        unowned = _or(_EA.owner == None, _EA.owner == "")  # noqa: E711
+                        same_mailbox = _or(_EA.imap_user == user, _EA.from_address == user)
+                        q = q.filter(_or(_EA.owner == user, _and(unowned, same_mailbox)))
+                    account_ids = {row[0] for row in q.all() if row[0]}
+                finally:
+                    _adb.close()
+                for child in cache_dir.glob("*.json"):
+                    if user and child.stem not in account_ids:
+                        continue
+                    try:
+                        child.unlink()
+                        removed_files += 1
+                    except Exception:
+                        pass
 
         return {"ok": True, "action": action, "cleared": cleared, "files": removed_files}
 

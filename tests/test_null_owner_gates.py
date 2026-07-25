@@ -157,9 +157,11 @@ def test_gallery_owner_filter_blocks_anonymous():
     from routes.gallery_routes import _owner_filter
     fake_q = MagicMock()
     out = _owner_filter(fake_q, user=None)
-    # Anonymous → q.filter(False) → contradiction, empty result set.
-    fake_q.filter.assert_called_once_with(False)
-    assert out is fake_q.filter.return_value
+    # Single-user / auth-disabled mode intentionally returns the query
+    # unchanged (show everything). Authenticated null-owner denial is
+    # enforced on image-id CRUD paths instead.
+    fake_q.filter.assert_not_called()
+    assert out is fake_q
 
 
 def test_gallery_owner_filter_passes_user():

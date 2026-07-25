@@ -73,7 +73,9 @@ def _ssh_base_argv(host: str, ssh_port: str | None) -> list[str]:
     """Build an ssh argv prefix for remote probes without local-shell parsing."""
     if not host or not str(host).strip() or str(host).lstrip().startswith("-"):
         raise ValueError("invalid ssh host")
-    argv = ["ssh", "-o", "ConnectTimeout=6", "-o", "StrictHostKeyChecking=no"]
+    # Prefer accept-new over disabling host-key checks entirely: auto-trust
+    # first contact, but reject later key swaps (MITM).
+    argv = ["ssh", "-o", "ConnectTimeout=6", "-o", "StrictHostKeyChecking=accept-new"]
     if ssh_port and str(ssh_port).strip() not in ("", "22"):
         port = str(ssh_port).strip()
         if not _SSH_PORT_RE.match(port) or not (1 <= int(port) <= 65535):

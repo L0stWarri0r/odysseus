@@ -15,17 +15,33 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"}
-_PRIVATE_PREFIXES = ("10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                     "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
-                     "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
-                     "172.30.", "172.31.", "192.168.", "100.")
 
 
 def _is_local_endpoint(url: str) -> bool:
-    """Check if URL points to a local/private/tailscale address."""
+    """Check if URL points to a local/private/tailscale address.
+
+    Uses ipaddress classification — never hostname prefix matching, which
+    treated spoofs like ``10.evil.com`` as private.
+    """
     try:
-        host = urlparse(url).hostname or ""
-        return host in _LOCAL_HOSTS or host.startswith(_PRIVATE_PREFIXES)
+        import ipaddress
+        host = (urlparse(url).hostname or "").lower().rstrip(".")
+        if not host:
+            return False
+        if host in _LOCAL_HOSTS or host.endswith(".localhost"):
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified:
+            return True
+        # Tailscale / CGNAT shared space (100.64.0.0/10) is not is_private.
+        if isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10"):
+            return True
+        return False
     except Exception:
         return False
 
