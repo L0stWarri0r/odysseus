@@ -106,12 +106,13 @@ def require_privilege(request: Request, key: str) -> str:
     try:
         privs = auth_mgr.get_privileges(user) or {}
     except Exception:
-        return user
+        # Fail closed: a privilege lookup error must not grant access.
+        raise HTTPException(403, f"Unable to verify privileges for {key.replace('_', ' ')}.")
     if not isinstance(privs, dict):
-        privs = {}
-    # True = permitted; missing key defaults to permitted (unknown privileges
-    # fail open — the UI gates display-side).
-    if not privs.get(key, True):
+        raise HTTPException(403, f"Unable to verify privileges for {key.replace('_', ' ')}.")
+    # True = permitted; missing key fails closed (deny) so unknown privilege
+    # keys cannot silently authorize sensitive actions.
+    if not privs.get(key, False):
         raise HTTPException(403, f"Your account is not allowed to {key.replace('_', ' ')}.")
     return user
 

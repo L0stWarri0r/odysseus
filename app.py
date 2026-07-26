@@ -845,6 +845,11 @@ async def _startup_event():
             for _g in _ghosts:
                 _db.query(_DbMsg).filter(_DbMsg.session_id == _g.id).delete()
                 _db.delete(_g)
+                # Drop hot-cache ghosts so list_sessions cannot revive them.
+                try:
+                    session_manager.sessions.pop(_g.id, None)
+                except Exception:
+                    pass
             if _ghosts:
                 _db.commit()
                 logger.info(f"Purged {len(_ghosts)} leftover incognito session(s)")

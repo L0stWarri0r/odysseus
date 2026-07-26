@@ -231,6 +231,7 @@ async function streamToPane(paneIdx, sessionId, message, aiMsgEl, opts) {
     const incognitoChk = document.getElementById('incognito-toggle');
     if (incognitoChk && incognitoChk.checked) {
       fd.append('incognito', 'true');
+      fd.append('private_mode', 'true');
     }
     // Disable document tool and memory injection in compare mode
     fd.append('no_documents', 'true');

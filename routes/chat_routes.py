@@ -398,7 +398,11 @@ def setup_chat_routes(
         search_context = form_data.get("search_context")  # pre-fetched web search results (compare mode)
         compare_mode = str(form_data.get("compare_mode", "")).lower() == "true"
         incognito = str(form_data.get("incognito", "")).lower() == "true"
-        private_mode = str(form_data.get("private_mode", "")).lower() == "true"
+        # Nobody/incognito UI historically only sent `incognito`. Hermes local
+        # opacity listens for `private_mode` — treat them as the same signal.
+        private_mode = (
+            str(form_data.get("private_mode", "")).lower() == "true" or incognito
+        )
         chat_mode = str(form_data.get("mode", "")).lower()  # 'chat' or 'agent'
         # Did the USER explicitly pick agent mode? (vs. us auto-escalating
         # below). Skill extraction should only learn from real agent sessions,
