@@ -61,19 +61,31 @@ class Session:
         if self.headers is None:
             self.headers = {}
 
-    def add_message(self, message: ChatMessage):
+    def add_message(self, message: ChatMessage, *, persist: bool = True) -> bool:
         """
         Add a message to this session.
 
         Delegates to SessionManager for persistence if available,
         otherwise just appends to history.
+
+        When ``persist=False`` (incognito / Nobody), the message stays in
+        RAM only — matching the documented privacy guarantee.
+
+        Returns False if persistence was requested and failed (history is
+        rolled back so RAM and DB stay aligned).
         """
         self.history.append(message)
         self.message_count = len(self.history)
 
-        # Delegate to session manager for persistence
-        if _session_manager:
-            _session_manager._persist_message(self.id, message)
+        if persist and _session_manager:
+            if not _session_manager._persist_message(self.id, message):
+                # Persist failed after append — undo so restart does not
+                # diverge from what the DB actually holds.
+                if self.history and self.history[-1] is message:
+                    self.history.pop()
+                self.message_count = len(self.history)
+                return False
+        return True
 
     def get_context_messages(self) -> List[Dict[str, Any]]:
         """Get messages in format for LLM API."""

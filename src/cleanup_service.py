@@ -64,6 +64,12 @@ async def archive_inactive_sessions(session_manager, owner: Optional[str] = None
         for session in sessions_to_archive:
             session.archived = True
             session.updated_at = _utcnow()
+            # Keep the hot cache aligned so archived chats leave the sidebar
+            # without requiring a process restart.
+            if session_manager is not None:
+                cached = getattr(session_manager, "sessions", {}).get(session.id)
+                if cached is not None:
+                    cached.archived = True
             archived_count += 1
 
         if archived_count > 0:

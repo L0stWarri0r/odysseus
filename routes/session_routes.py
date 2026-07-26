@@ -152,18 +152,18 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             _purge_db = SessionLocal()
             try:
                 from core.database import ChatMessage as _DbMsg
-                _ghosts = _purge_db.query(DbSession).filter(
+                _ghosts_q = _purge_db.query(DbSession).filter(
                     DbSession.name.in_(("Nobody", "Incognito")),
                     DbSession.created_at < _cutoff,
-                ).all()
+                )
+                # Multi-tenant: never wipe another user's incognito leftovers.
+                if user:
+                    _ghosts_q = _ghosts_q.filter(DbSession.owner == user)
+                _ghosts = _ghosts_q.all()
                 for _g in _ghosts:
                     _purge_db.query(_DbMsg).filter(_DbMsg.session_id == _g.id).delete()
                     _purge_db.delete(_g)
-                    if hasattr(session_manager, "delete_session"):
-                        try:
-                            session_manager.delete_session(_g.id)
-                        except Exception:
-                            pass
+                    session_manager.sessions.pop(_g.id, None)
                 if _ghosts:
                     _purge_db.commit()
             finally:
@@ -943,9 +943,8 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
                 if (row.name or "").strip() == "Incognito":
                     should_delete = True
                     deleted_throwaway += 1
-                    db.delete(row)
-                    if hasattr(session_manager, 'delete_session'):
-                        session_manager.delete_session(row.id)
+                    # Single delete path keeps the in-memory cache in sync.
+                    session_manager.delete_session(row.id)
                     continue
                 msg_count = _counts.get(row.id, 0)
                 should_delete = False
@@ -974,11 +973,9 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
                         should_delete = True
                         deleted_throwaway += 1
                 if should_delete:
-                    db.delete(row)
-                    if hasattr(session_manager, 'delete_session'):
-                        session_manager.delete_session(row.id)
+                    session_manager.delete_session(row.id)
             if deleted_empty or deleted_throwaway:
-                db.commit()
+                # delete_session already committed each row; no outer commit.
                 logger.info(f"Auto-sort: deleted {deleted_empty} empty + {deleted_throwaway} throwaway sessions")
         finally:
             db.close()
