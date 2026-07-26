@@ -121,6 +121,21 @@ class SessionManager:
         session.message_count = getattr(db_session, "message_count", 0) or 0
         return session
 
+    @staticmethod
+    def _parse_message_meta(raw) -> dict:
+        """Parse chat_messages.meta_data safely. Corrupt JSON must not block
+        loading the whole session (headers already used this pattern)."""
+        if not raw:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            logger.warning("Corrupt message meta_data; using empty metadata")
+            return {}
+
     def _db_to_session(self, db_session: DbSession, db) -> Optional[Session]:
         """Convert a database session to a Session object."""
         history = []
@@ -128,8 +143,7 @@ class SessionManager:
         # Try relationship first, then direct query
         if db_session.messages:
             for db_msg in db_session.messages:
-                meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
-                if meta is None: meta = {}
+                meta = self._parse_message_meta(db_msg.meta_data)
                 meta['_db_id'] = db_msg.id
                 meta.setdefault('timestamp', _message_timestamp_iso(db_msg.timestamp))
                 history.append(ChatMessage(
@@ -143,8 +157,7 @@ class SessionManager:
             ).order_by(DbChatMessage.timestamp).all()
 
             for db_msg in db_messages:
-                meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
-                if meta is None: meta = {}
+                meta = self._parse_message_meta(db_msg.meta_data)
                 meta['_db_id'] = db_msg.id
                 meta.setdefault('timestamp', _message_timestamp_iso(db_msg.timestamp))
                 history.append(ChatMessage(
@@ -184,22 +197,33 @@ class SessionManager:
     # Message operations
     # ------------------------------------------------------------------
 
-    def add_message(self, session_id: str, message: ChatMessage):
+    def add_message(self, session_id: str, message: ChatMessage, *, persist: bool = True) -> bool:
         """
-        Add a message to a session and persist to database.
+        Add a message to a session and optionally persist to database.
 
-        Args:
-            session_id: Session ID
-            message: ChatMessage to add
+        Returns False if persistence was requested and failed (in-memory
+        history is left unchanged so RAM/DB stay aligned).
         """
         session = self.get_session(session_id)
         session.history.append(message)
         session.message_count = len(session.history)
 
-        self._persist_message(session_id, message)
+        if not persist:
+            return True
 
-    def _persist_message(self, session_id: str, message: ChatMessage):
-        """Persist a single message to the database."""
+        if not self._persist_message(session_id, message):
+            if session.history and session.history[-1] is message:
+                session.history.pop()
+            session.message_count = len(session.history)
+            return False
+        return True
+
+    def _persist_message(self, session_id: str, message: ChatMessage) -> bool:
+        """Persist a single message to the database.
+
+        Returns True on success, False when the write is skipped or fails.
+        Callers that already appended to history must roll back on False.
+        """
         db = SessionLocal()
         try:
             db_session = db.query(DbSession).filter(DbSession.id == session_id).first()
@@ -209,7 +233,7 @@ class SessionManager:
                 # any stale cached session so later writes fail closed too.
                 self.sessions.pop(session_id, None)
                 logger.warning("Dropping message for deleted session %s", session_id)
-                return
+                return False
 
             msg_id = str(uuid.uuid4())
             msg_time = datetime.utcnow()
@@ -246,10 +270,12 @@ class SessionManager:
             message.metadata['_db_id'] = msg_id
 
             logger.debug(f"Persisted message to session {session_id}")
+            return True
 
         except Exception as e:
             logger.error(f"Error persisting message: {e}")
             db.rollback()
+            return False
         finally:
             db.close()
 
@@ -594,13 +620,54 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     def get_sessions_for_user(self, username: Optional[str] = None) -> Dict[str, Session]:
-        """Return sessions for a specific user (or all if username is None)."""
-        if username is None:
-            return self.sessions
-        return {
-            sid: s for sid, s in self.sessions.items()
-            if s.owner == username
-        }
+        """Return the full session catalog for a user from the database.
+
+        The in-memory ``self.sessions`` cache is only a hot set (boot loads
+        ≤100 by last_accessed). Listing from the cache alone made older
+        chats vanish from the sidebar and from ``list_sessions`` tools.
+        """
+        db = SessionLocal()
+        try:
+            q = db.query(DbSession).filter(
+                DbSession.archived == False,
+                DbSession.message_count > 0,
+            )
+            if username is not None:
+                q = q.filter(DbSession.owner == username)
+            rows = q.order_by(DbSession.last_accessed.desc()).all()
+
+            result: Dict[str, Session] = {}
+            for row in rows:
+                cached = self.sessions.get(row.id)
+                if cached is not None:
+                    result[row.id] = cached
+                    continue
+                meta = self._db_to_session_meta(row)
+                if meta is not None:
+                    result[row.id] = meta
+
+            # Include memory-only sessions (e.g. active incognito) that have
+            # history but may not yet appear in the DB catalog filters.
+            for sid, sess in self.sessions.items():
+                if sid in result or sess.archived:
+                    continue
+                if username is not None and sess.owner != username:
+                    continue
+                count = sess.message_count or len(sess.history or [])
+                if count <= 0:
+                    continue
+                result[sid] = sess
+            return result
+        except Exception as e:
+            logger.error(f"Error listing sessions for user {username!r}: {e}")
+            if username is None:
+                return dict(self.sessions)
+            return {
+                sid: s for sid, s in self.sessions.items()
+                if s.owner == username
+            }
+        finally:
+            db.close()
 
     def save_sessions(self):
         """No-op for DB compatibility."""

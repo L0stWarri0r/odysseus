@@ -39,11 +39,27 @@ async def run_auto_sort(owner: str, skip_llm: bool = False) -> str:
     from src.llm_core import llm_call_async
     from src.task_endpoint import resolve_task_endpoint
 
+    # Resolve session_manager once so Phase 1 deletes stay cache-synced.
+    session_manager = None
+    try:
+        from core.models import _session_manager as _sm
+        session_manager = _sm
+    except Exception:
+        session_manager = None
+    if session_manager is None:
+        try:
+            import app as _app_mod
+            session_manager = getattr(getattr(_app_mod, "app", None), "state", None)
+            session_manager = getattr(session_manager, "session_manager", None) if session_manager else None
+        except Exception:
+            session_manager = None
+
     db = SessionLocal()
     try:
         # ── Phase 1: Delete empty/throwaway sessions ──
         deleted_empty = 0
         deleted_throwaway = 0
+        to_delete: list[str] = []
 
         rows = db.query(DbSession).filter(
             DbSession.archived == False,
@@ -55,7 +71,7 @@ async def run_auto_sort(owner: str, skip_llm: bool = False) -> str:
                 continue
             if (row.name or "").strip() == "Incognito":
                 deleted_throwaway += 1
-                db.delete(row)
+                to_delete.append(row.id)
                 continue
 
             msg_count = db.query(DbMsg.id).filter(
@@ -97,12 +113,31 @@ async def run_auto_sort(owner: str, skip_llm: bool = False) -> str:
                         deleted_throwaway += 1
 
             if should_delete:
-                db.delete(row)
+                to_delete.append(row.id)
+
+        # Close this connection before delete_session opens its own, to avoid
+        # SQLite lock contention and double-delete across two sessions.
+        db.close()
+        db = None
+
+        for sid in to_delete:
+            if session_manager is not None:
+                session_manager.delete_session(sid)
+            else:
+                _db = SessionLocal()
+                try:
+                    row = _db.query(DbSession).filter(DbSession.id == sid).first()
+                    if row:
+                        _db.query(DbMsg).filter(DbMsg.session_id == sid).delete()
+                        _db.delete(row)
+                        _db.commit()
+                finally:
+                    _db.close()
 
         if deleted_empty or deleted_throwaway:
-            db.commit()
             logger.info(f"Auto-sort: deleted {deleted_empty} empty + {deleted_throwaway} throwaway sessions")
 
+        db = SessionLocal()
         # ── Phase 2: AI folder assignment ──
         remaining = db.query(DbSession).filter(
             DbSession.archived == False,
@@ -210,4 +245,5 @@ async def run_auto_sort(owner: str, skip_llm: bool = False) -> str:
         return f"Deleted {deleted_empty} empty + {deleted_throwaway} throwaway. Sorted {updated} sessions into: {folder_summary}"
 
     finally:
-        db.close()
+        if db is not None:
+            db.close()
