@@ -355,6 +355,20 @@ TMUX_LOG_DIR = Path(tempfile.gettempdir()) / "odysseus-tmux"
 PTY_UNSUPPORTED_ERROR = "pty_unsupported"
 
 
+def _ensure_tmux_log_dir() -> Path:
+    """Create the tmux log/script dir with owner-only permissions.
+
+    Wrapper scripts embed the full shell command and logs may contain
+    secrets; avoid world-readable /tmp defaults and executable scripts.
+    """
+    TMUX_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        TMUX_LOG_DIR.chmod(0o700)
+    except OSError:
+        pass
+    return TMUX_LOG_DIR
+
+
 class ShellExecRequest(BaseModel):
     command: str
     timeout: int | None = None  # optional override; 0 = no timeout (run until client disconnects)
@@ -548,7 +562,7 @@ async def _generate_tmux(cmd: str, request: Request):
     """Run command in a tmux session. Streams output via a log file.
     The tmux session survives browser disconnect — user can reconnect or
     `tmux attach -t <name>` to see it live."""
-    TMUX_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_tmux_log_dir()
     session_id = f"cookbook-{uuid.uuid4().hex[:8]}"
     log_path = TMUX_LOG_DIR / f"{session_id}.log"
 
@@ -569,7 +583,13 @@ async def _generate_tmux(cmd: str, request: Request):
         f"exit $EC\n",
         encoding="utf-8",
     )
-    script_path.chmod(0o755)
+    # Owner-only + executable for the invoking user (not world-readable 0755).
+    script_path.chmod(0o700)
+    try:
+        log_path.touch(exist_ok=True)
+        log_path.chmod(0o600)
+    except OSError:
+        pass
     logger.info("tmux wrapper script created: session=%s path=%s", session_id, script_path)
 
     tmux_cmd = f"tmux new-session -d -s {session_id} {shlex.quote(str(script_path))}"
@@ -663,7 +683,7 @@ async def _generate_win_detached(cmd: str, request: Request):
     (Git Bash) for command-syntax parity; falls back to cmd.exe. There's no
     `tmux attach` equivalent, but the "keeps running if you disconnect" contract
     holds, which is the point of the feature for long Cookbook downloads."""
-    TMUX_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_tmux_log_dir()
     session_id = f"cookbook-{uuid.uuid4().hex[:8]}"
     log_path = TMUX_LOG_DIR / f"{session_id}.log"
     exit_path = TMUX_LOG_DIR / f"{session_id}.exit"
@@ -676,6 +696,10 @@ async def _generate_win_detached(cmd: str, request: Request):
             f"echo $? > {shlex.quote(str(exit_path))}\n",
             encoding="utf-8",
         )
+        try:
+            script_path.chmod(0o700)
+        except OSError:
+            pass
         argv = [bash, str(script_path)]
     else:
         script_path = TMUX_LOG_DIR / f"{session_id}.cmd"
@@ -686,6 +710,10 @@ async def _generate_win_detached(cmd: str, request: Request):
             f'echo %ERRORLEVEL%> "{exit_path}"\r\n',
             encoding="utf-8",
         )
+        try:
+            script_path.chmod(0o700)
+        except OSError:
+            pass
         argv = [os.environ.get("ComSpec", "cmd.exe"), "/c", str(script_path)]
 
     try:
