@@ -1561,15 +1561,17 @@ class TaskScheduler:
             {"role": "user", "content": user_content},
         ]
 
-        # Resolve headers from the endpoint's API key
+        # Resolve headers from the endpoint's API key (owner-scoped).
         headers = {}
         try:
             from core.database import SessionLocal, ModelEndpoint
+            from src.auth_helpers import owner_filter
             from src.endpoint_resolver import normalize_base, build_headers
             db2 = SessionLocal()
             try:
-                eps = db2.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True).all()
-                for ep in eps:
+                q = db2.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
+                q = owner_filter(q, ModelEndpoint, task.owner or "")
+                for ep in q.all():
                     if normalize_base(ep.base_url) in endpoint_url or endpoint_url in normalize_base(ep.base_url):
                         headers = build_headers(ep.api_key, normalize_base(ep.base_url))
                         break
@@ -1589,7 +1591,7 @@ class TaskScheduler:
         # chat uses but with the utility list (`utility_model_fallbacks`).
         try:
             from src.endpoint_resolver import resolve_utility_fallback_candidates
-            _task_fallbacks = resolve_utility_fallback_candidates()
+            _task_fallbacks = resolve_utility_fallback_candidates(owner=task.owner or "")
         except Exception:
             _task_fallbacks = []
         async for event_str in stream_agent_loop(
@@ -1632,7 +1634,9 @@ class TaskScheduler:
                 else:
                     grace_context += "No tool results were captured."
                 grace_context += "\n\nSummarize what you accomplished and what's still pending. Be concise."
-                _grace_candidates = [(endpoint_url, model, headers)] + resolve_utility_fallback_candidates()
+                _grace_candidates = [(endpoint_url, model, headers)] + resolve_utility_fallback_candidates(
+                    owner=task.owner or ""
+                )
                 full_text = await llm_call_async_with_fallback(
                     _grace_candidates,
                     messages=[
@@ -1682,14 +1686,16 @@ class TaskScheduler:
         # Record the resolved model for the run record (see _execute_task_locked).
         self._last_run_model = model
 
-        # Resolve headers
+        # Resolve headers (owner-scoped — never borrow another user's API key).
         headers = {}
         try:
             from core.database import ModelEndpoint
+            from src.auth_helpers import owner_filter
             from src.endpoint_resolver import normalize_base, build_headers
             db2 = db
-            eps = db2.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True).all()
-            for ep in eps:
+            q = db2.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
+            q = owner_filter(q, ModelEndpoint, task.owner or "")
+            for ep in q.all():
                 if normalize_base(ep.base_url) in endpoint_url or endpoint_url in normalize_base(ep.base_url):
                     headers = build_headers(ep.api_key, normalize_base(ep.base_url))
                     break

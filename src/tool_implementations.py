@@ -3742,6 +3742,15 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
         except Exception:
             return None
 
+    def _owns(d: dict) -> bool:
+        # Single-user / unscoped callers (owner is None/empty) keep legacy
+        # visibility. Authenticated multi-user callers only see their rows —
+        # null/missing owner fails closed so one user cannot read another's
+        # pre-migration or anonymous report.
+        if not owner:
+            return True
+        return (d.get("owner") or "") == owner
+
     if action in ("read", "open", "view", "get"):
         if not rid:
             return {"error": "Provide the research id (from action='list')."}
@@ -3749,6 +3758,8 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
         if not p.exists():
             return {"error": f"Research '{rid}' not found."}
         d = _load(p) or {}
+        if not _owns(d):
+            return {"error": f"Research '{rid}' not found."}
         summary = d.get("result") or d.get("raw_report") or d.get("summary") or d.get("report") or "(no report body)"
         srcs = d.get("sources", []) or []
         out = f"# {d.get('query', '(untitled)')}\n\n{summary}"
@@ -3763,6 +3774,9 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
             return {"error": "Provide the research id to delete (from action='list')."}
         p = data_dir / f"{rid}.json"
         if p.exists():
+            d = _load(p) or {}
+            if not _owns(d):
+                return {"error": f"Research '{rid}' not found."}
             try:
                 p.unlink()
             except Exception as e:
@@ -3776,7 +3790,7 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
     if data_dir.exists():
         for p in data_dir.glob("*.json"):
             d = _load(p)
-            if not d:
+            if not d or not _owns(d):
                 continue
             q = d.get("query", "")
             if search and search not in q.lower():
