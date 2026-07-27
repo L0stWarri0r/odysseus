@@ -178,17 +178,24 @@ def setup_task_routes(task_scheduler) -> APIRouter:
     def _owner(request: Request):
         return get_current_user(request)
 
-    async def _generate_task_name(prompt: str) -> str:
-        """Use LLM to generate a short task name from the prompt."""
+    async def _generate_task_name(prompt: str, owner: str = "") -> str:
+        """Use LLM to generate a short task name from the prompt.
+
+        Endpoint selection is owner-scoped so one user's task prompt is never
+        sent to another user's model/API key via the most-recent session.
+        """
         try:
             from src.llm_core import llm_call_async
             from core.database import Session as DbSession
             db = SessionLocal()
             try:
-                recent = db.query(DbSession).filter(
+                q = db.query(DbSession).filter(
                     DbSession.endpoint_url.isnot(None),
                     DbSession.model.isnot(None),
-                ).order_by(DbSession.created_at.desc()).first()
+                )
+                if owner:
+                    q = q.filter(DbSession.owner == owner)
+                recent = q.order_by(DbSession.created_at.desc()).first()
                 if not recent:
                     return prompt[:50].strip()
                 url, model = recent.endpoint_url, recent.model
@@ -352,7 +359,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 from src.builtin_actions import BUILTIN_ACTION_INFO
                 name = BUILTIN_ACTION_INFO.get(req.action, req.action or "Action Task")
             elif req.prompt:
-                name = await _generate_task_name(req.prompt)
+                name = await _generate_task_name(req.prompt, owner=user or "")
             else:
                 name = "Untitled Task"
 
