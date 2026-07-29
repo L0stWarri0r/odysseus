@@ -37,7 +37,7 @@ from src.llm_core import llm_call_async
 
 from routes.email_helpers import (
     _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account,
-    _q, _attach_compose_uploads, _cleanup_compose_uploads,
+    _q, _attach_compose_uploads, _cleanup_compose_uploads, _compose_upload_path,
     _load_settings, _save_settings, _get_email_config,
     _send_smtp_message, _smtp_security_mode,
     _IMAP_TIMEOUT_SECONDS, _open_imap_connection,
@@ -1886,7 +1886,8 @@ def setup_email_routes():
             # Sanitize filename and generate a unique token
             safe_name = re.sub(r"[^\w\s\-.]", "_", file.filename or "file").strip()
             token = f"{uuid.uuid4().hex}_{safe_name}"
-            filepath = COMPOSE_UPLOADS_DIR / token
+            filepath = _compose_upload_path(owner, token)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
             content = await file.read()
             if len(content) > MAX_BYTES:
                 raise HTTPException(413, f"Attachment exceeds {MAX_BYTES // (1024*1024)}MB limit")
@@ -1908,9 +1909,9 @@ def setup_email_routes():
     async def delete_compose_upload(token: str, owner: str = Depends(require_owner)):
         """Delete a staged compose upload."""
         try:
-            # Prevent path traversal
-            safe_token = Path(token).name
-            filepath = COMPOSE_UPLOADS_DIR / safe_token
+            # Owner-scoped path prevents deleting another user's staged file
+            # even when the UUID token is known.
+            filepath = _compose_upload_path(owner, token)
             if filepath.exists():
                 filepath.unlink()
             return {"success": True}
@@ -1955,13 +1956,13 @@ def setup_email_routes():
 
         if has_atts:
             outer.attach(body_container)
-            _attach_compose_uploads(outer, attachments)
+            _attach_compose_uploads(outer, attachments, owner=owner)
 
         recipients = _envelope_recipients(to, cc, bcc)
 
         _send_smtp_message(cfg, cfg["from_address"], recipients, outer.as_string())
 
-        _cleanup_compose_uploads(attachments)
+        _cleanup_compose_uploads(attachments, owner=owner)
 
     @router.post("/schedule")
     async def schedule_email(req: dict, owner: str = Depends(require_owner)):
@@ -2169,7 +2170,7 @@ def setup_email_routes():
 
         if has_attachments:
             outer.attach(body_container)
-            _attach_compose_uploads(outer, req.attachments)
+            _attach_compose_uploads(outer, req.attachments, owner=owner)
 
         # Build recipient list (parse the address grammar so display names with
         # commas don't get split into broken envelope addresses)
@@ -2274,7 +2275,7 @@ def setup_email_routes():
                         }
                 except Exception as e:
                     logger.warning(f"Failed to append to Sent: {e}")
-                _cleanup_compose_uploads(_atts)
+                _cleanup_compose_uploads(_atts, owner=owner)
                 return delivery_result
             except Exception as e:
                 logger.error(f"Failed to send email to {_to_label}: {e}")
