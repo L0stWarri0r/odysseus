@@ -293,6 +293,13 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         if new_username in auth_manager.users:
             raise HTTPException(409, "Username already taken")
 
+        # Reject reserved identities BEFORE rewriting owner columns. rename_user
+        # also refuses these names, but doing the DB rewrite first would orphan
+        # every owned row under `internal-tool` / `api` / etc.
+        from core.auth import RESERVED_USERNAMES
+        if new_username in RESERVED_USERNAMES:
+            raise HTTPException(400, "Username is reserved")
+
         # Usernames are ownership keys for user data. Rename the common
         # owner-scoped DB rows before changing auth so the account keeps
         # access to its sessions, docs, email accounts, tasks, etc.

@@ -195,7 +195,9 @@ def _assert_owns_account(account_id: str, owner: str) -> None:
             row = db.query(_EA).filter(_EA.id == account_id).first()
             if row is None:
                 raise HTTPException(404, "Account not found")
-            if row.owner and row.owner != owner:
+            # Fail closed on null/empty row.owner: legacy unowned accounts
+            # must not be operable by an arbitrary authenticated user.
+            if row.owner != owner:
                 # Treat as 404 (not 403) so we don't leak existence.
                 raise HTTPException(404, "Account not found")
         finally:
@@ -208,6 +210,7 @@ def _assert_owns_account(account_id: str, owner: str) -> None:
         logger.error(f"Account-owner check failed: {e}")
         raise HTTPException(503, "Account check failed")
 
+
 def _q(name: str) -> str:
     """Quote an IMAP mailbox name. Defensive: escapes `\\` and `"` and wraps
     in double quotes so user-supplied folder names with spaces or quotes can't
@@ -216,7 +219,26 @@ def _q(name: str) -> str:
     return '"' + (name or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _attach_compose_uploads(outer: MIMEMultipart, tokens) -> None:
+def _safe_compose_owner(owner: str) -> str:
+    """Filesystem-safe owner segment for compose-upload isolation."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", (owner or "").strip().lower()) or "_anon"
+
+
+def _compose_upload_path(owner: str, token: str) -> Path:
+    """Resolve a staged compose upload under the caller's owner directory.
+
+    Tokens are UUID-based and hard to guess, but without an owner stamp any
+    authenticated user who learns a token can attach/delete another user's
+    file. Owner-scoped paths close that capability leak. Empty owner keeps
+    the legacy flat layout for single-user / AUTH_DISABLED deploys.
+    """
+    safe_token = Path(token).name
+    if not owner:
+        return COMPOSE_UPLOADS_DIR / safe_token
+    return COMPOSE_UPLOADS_DIR / _safe_compose_owner(owner) / safe_token
+
+
+def _attach_compose_uploads(outer: MIMEMultipart, tokens, owner: str = "") -> None:
     """Read each staged upload token, build a MIMEBase part, and attach to
     `outer`. Tokens are sanitized via Path(token).name to prevent traversal.
     Missing files are skipped silently. Used by /send, scheduled delivery,
@@ -224,10 +246,9 @@ def _attach_compose_uploads(outer: MIMEMultipart, tokens) -> None:
     if not tokens:
         return
     for token in tokens:
-        safe_token = Path(token).name
-        path = COMPOSE_UPLOADS_DIR / safe_token
+        path = _compose_upload_path(owner, token)
         if not path.exists():
-            logger.warning(f"Attachment token not found: {safe_token}")
+            logger.warning(f"Attachment token not found: {Path(token).name}")
             continue
         ctype, encoding = mimetypes.guess_type(str(path))
         if ctype is None or encoding is not None:
@@ -238,18 +259,19 @@ def _attach_compose_uploads(outer: MIMEMultipart, tokens) -> None:
             part.set_payload(f.read())
         encoders.encode_base64(part)
         # Token format: "<uuid>_<original_name>"
+        safe_token = Path(token).name
         original_name = safe_token.split("_", 1)[1] if "_" in safe_token else safe_token
         part.add_header("Content-Disposition", "attachment", filename=original_name)
         outer.attach(part)
 
 
-def _cleanup_compose_uploads(tokens) -> None:
+def _cleanup_compose_uploads(tokens, owner: str = "") -> None:
     """Best-effort unlink of staged uploads after delivery (or failure)."""
     if not tokens:
         return
     for token in tokens:
         try:
-            (COMPOSE_UPLOADS_DIR / Path(token).name).unlink(missing_ok=True)
+            _compose_upload_path(owner, token).unlink(missing_ok=True)
         except Exception:
             pass
 
