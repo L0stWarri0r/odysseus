@@ -145,7 +145,7 @@ def test_scheduled_poller_resolves_config_with_row_owner(tmp_path, monkeypatch):
     monkeypatch.setattr(email_pollers, "_send_smtp_message", lambda *args, **kwargs: calls.append(("send", args[1], args[2])))
     monkeypatch.setattr(email_pollers, "_imap", FakeImap)
     monkeypatch.setattr(email_pollers, "_detect_sent_folder", lambda imap: "Sent")
-    monkeypatch.setattr(email_pollers, "_cleanup_compose_uploads", lambda attachments: calls.append(("cleanup", attachments)))
+    monkeypatch.setattr(email_pollers, "_cleanup_compose_uploads", lambda attachments, owner="": calls.append(("cleanup", attachments, owner)))
 
     result = email_pollers._scheduled_poll_once()
 
