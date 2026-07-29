@@ -418,11 +418,23 @@ def setup_history_routes(session_manager) -> APIRouter:
                     db1.content = merged_content
                     db1.meta_data = _json.dumps(merged_meta)
 
-                    # Remove the continue user message if between them
+                    # Match in-memory removals exactly: drop db2, and only the
+                    # synthetic "continue" user row between them when present.
+                    # The previous range(db_idx2, db_idx1, -1) wiped EVERY row
+                    # between the two assistants (tool calls, etc.), desyncing
+                    # DB history from RAM after a continue/merge.
                     db_idx2 = db_messages.index(db2)
                     db_idx1 = db_messages.index(db1)
-                    for di in range(db_idx2, db_idx1, -1):
-                        db.delete(db_messages[di])
+                    to_delete = [db2]
+                    if db_idx2 - 1 > db_idx1:
+                        between = db_messages[db_idx2 - 1]
+                        if (
+                            between.role == "user"
+                            and "previous response was interrupted" in (between.content or "")
+                        ):
+                            to_delete.append(between)
+                    for row in to_delete:
+                        db.delete(row)
 
                     db.commit()
             finally:
