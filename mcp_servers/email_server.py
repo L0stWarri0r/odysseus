@@ -20,6 +20,7 @@ import sqlite3
 import sys
 import os
 import os.path
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -47,7 +48,13 @@ def _uid_fetch_rows(data) -> list:
 # inbox; None resolves to the default row. Falls back to env vars / settings.json
 # flat keys when no DB row matches (legacy single-account behaviour).
 
-_ACCOUNT_CACHE: dict = {}  # key = normalized account selector -> config dict
+_ACCOUNT_CACHE: dict = {}  # key = normalized account selector -> (expires_at, config dict)
+_ACCOUNT_CACHE_TTL_S = float(os.environ.get("EMAIL_ACCOUNT_CACHE_TTL", "60"))
+
+
+def clear_account_cache() -> None:
+    """Drop cached IMAP/SMTP configs (e.g. after credentials change)."""
+    _ACCOUNT_CACHE.clear()
 
 
 def _clean_header_value(value) -> str:
@@ -135,8 +142,12 @@ def _load_config(account: str | None = None) -> dict:
       3. hardcoded fallbacks (localhost:31143 etc.)
     """
     cache_key = (account or "").strip().lower() or "__default__"
-    if cache_key in _ACCOUNT_CACHE:
-        return _ACCOUNT_CACHE[cache_key]
+    cached = _ACCOUNT_CACHE.get(cache_key)
+    if cached is not None:
+        expires_at, cached_cfg = cached
+        if expires_at > time.monotonic():
+            return cached_cfg
+        _ACCOUNT_CACHE.pop(cache_key, None)
 
     cfg = {
         "imap_host": os.environ.get("IMAP_HOST", "localhost"),
@@ -215,7 +226,12 @@ def _load_config(account: str | None = None) -> dict:
     if not cfg["from_address"]:
         cfg["from_address"] = cfg["imap_user"]
 
-    _ACCOUNT_CACHE[cache_key] = cfg
+    # TTL-cache so credential/host edits in email_accounts take effect without
+    # restarting the MCP process. Previous forever-cache kept rotated passwords
+    # alive until the stdio server was killed.
+    ttl = max(0.0, _ACCOUNT_CACHE_TTL_S)
+    if ttl > 0:
+        _ACCOUNT_CACHE[cache_key] = (time.monotonic() + ttl, cfg)
     return cfg
 
 

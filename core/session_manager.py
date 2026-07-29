@@ -128,7 +128,10 @@ class SessionManager:
         # Try relationship first, then direct query
         if db_session.messages:
             for db_msg in db_session.messages:
-                meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
+                try:
+                    meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
                 if meta is None: meta = {}
                 meta['_db_id'] = db_msg.id
                 meta.setdefault('timestamp', _message_timestamp_iso(db_msg.timestamp))
@@ -143,7 +146,10 @@ class SessionManager:
             ).order_by(DbChatMessage.timestamp).all()
 
             for db_msg in db_messages:
-                meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
+                try:
+                    meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
                 if meta is None: meta = {}
                 meta['_db_id'] = db_msg.id
                 meta.setdefault('timestamp', _message_timestamp_iso(db_msg.timestamp))
