@@ -7,7 +7,7 @@
 //   - Other static assets (images/fonts/libs): cache-first with bg refresh.
 //   - API / non-GET: never cached.
 // Bump CACHE_NAME whenever the precache list or SW logic changes.
-const CACHE_NAME = 'odysseus-v327-drag-refresh';
+const CACHE_NAME = 'odysseus-v328-scoped-cache-prune';
 
 // Core shell precached on install so repeat opens are instant without any
 // network wait. Keep this list in sync with the <script type="module"> tags
@@ -81,9 +81,16 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
+  // Only prune Odysseus Cache Storage keys. Deleting every non-current key
+  // wiped unrelated site caches sharing this origin (contradicts the scoped
+  // odysseus-* reset contract in swReset.js / System → Maintenance).
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+      Promise.all(
+        keys
+          .filter(k => k.startsWith('odysseus-') && k !== CACHE_NAME)
+          .map(k => caches.delete(k))
+      )
     ).then(() => self.clients.claim())
   );
 });

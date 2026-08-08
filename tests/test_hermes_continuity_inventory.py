@@ -98,7 +98,21 @@ def test_build_continuity_inventory_handles_missing_home(tmp_path):
 def test_hermes_continuity_inventory_route_uses_env_home(tmp_path, monkeypatch):
     hermes_home = _sample_hermes_home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class FakeAuthManager:
+        is_configured = True
+
+        def is_admin(self, username):
+            return username == "admin"
+
     app = FastAPI()
+    app.state.auth_manager = FakeAuthManager()
+
+    @app.middleware("http")
+    async def _stamp_user(request, call_next):
+        request.state.current_user = "admin"
+        return await call_next(request)
+
     app.include_router(setup_hermes_routes())
     client = TestClient(app)
 

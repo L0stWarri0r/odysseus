@@ -145,12 +145,22 @@ def sanitize_error(error: str, max_len: int = 200) -> str:
     return cleaned[:max_len]
 
 
+# Cap concurrent in-flight webhook deliveries. fire() used to spawn an
+# unbounded create_task per matching hook, which could overwhelm the process
+# under chat.completed storms or a large webhook fan-out.
+_MAX_IN_FLIGHT_DELIVERIES = 32
+
+
 class WebhookManager:
-    def __init__(self, api_key_manager=None):
+    def __init__(self, api_key_manager=None, max_in_flight: int = _MAX_IN_FLIGHT_DELIVERIES):
         # Disable redirects to prevent SSRF via redirect chains
         self._client = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._api_key_manager = api_key_manager
+        self._max_in_flight = max(1, int(max_in_flight))
+        # asyncio is single-threaded: mutate only between awaits.
+        self._in_flight = 0
+        self._overflow_logged = False
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
         self._loop = loop
@@ -191,13 +201,39 @@ class WebhookManager:
             db.close()
 
         for wh in matching:
+            if self._in_flight >= self._max_in_flight:
+                if not self._overflow_logged:
+                    logger.warning(
+                        "Webhook delivery backlog full (max_in_flight=%s); dropping excess events",
+                        self._max_in_flight,
+                    )
+                    self._overflow_logged = True
+                continue
             decrypted_secret = self._decrypt_secret(wh.secret)
-            asyncio.create_task(self._deliver(wh.id, wh.url, decrypted_secret, event, payload))
+            self._in_flight += 1
+            asyncio.create_task(
+                self._deliver_bounded(wh.id, wh.url, decrypted_secret, event, payload)
+            )
 
     async def deliver_test(self, webhook_id: str, url: str, encrypted_secret: Optional[str]):
         """Public method for the test-webhook route."""
         decrypted = self._decrypt_secret(encrypted_secret)
         await self._deliver(webhook_id, url, decrypted, "webhook.test", {"message": "Test ping from Odysseus"})
+
+    async def _deliver_bounded(
+        self,
+        webhook_id: str,
+        url: str,
+        secret: Optional[str],
+        event: str,
+        payload: dict,
+    ):
+        """Run one delivery and always release the in-flight slot."""
+        try:
+            await self._deliver(webhook_id, url, secret, event, payload)
+            self._overflow_logged = False
+        finally:
+            self._in_flight = max(0, self._in_flight - 1)
 
     async def _deliver(self, webhook_id: str, url: str, secret: Optional[str], event: str, payload: dict):
         """Internal delivery. Never call directly from outside this class (use deliver_test)."""

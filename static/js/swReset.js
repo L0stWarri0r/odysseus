@@ -19,28 +19,46 @@ export async function resetOdysseusLocalCache(options = {}) {
   try {
     say('Unregistering Odysseus service worker…');
     let workersRemoved = 0;
+    let workerFailures = 0;
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
       const odysseusRegs = regs.filter(isOdysseusWorker);
-      await Promise.all(
-        odysseusRegs.map((reg) => reg.unregister().then((ok) => {
-          if (ok) workersRemoved += 1;
-          return ok;
-        }).catch(() => false))
+      const workerResults = await Promise.allSettled(
+        odysseusRegs.map((reg) => reg.unregister())
       );
+      for (const result of workerResults) {
+        if (result.status === 'fulfilled' && result.value) workersRemoved += 1;
+        else workerFailures += 1;
+      }
     }
 
     say('Deleting Odysseus Cache Storage entries…');
     let cachesRemoved = 0;
+    let cacheFailures = 0;
     if ('caches' in window) {
       const keys = await caches.keys();
       const odysseusKeys = keys.filter((key) => key.startsWith(cachePrefix));
-      await Promise.all(
-        odysseusKeys.map((key) => caches.delete(key).then((ok) => {
-          if (ok) cachesRemoved += 1;
-          return ok;
-        }).catch(() => false))
+      const cacheResults = await Promise.allSettled(
+        odysseusKeys.map((key) => caches.delete(key))
       );
+      for (const result of cacheResults) {
+        if (result.status === 'fulfilled' && result.value) cachesRemoved += 1;
+        else cacheFailures += 1;
+      }
+    }
+
+    const failed = workerFailures + cacheFailures;
+    if (failed > 0) {
+      const failText = `Reset partial: removed ${workersRemoved} worker(s) and ${cachesRemoved} cache(s); ${failed} step(s) failed. Reload manually if the app still looks stale.`;
+      say(failText);
+      return {
+        ok: false,
+        partial: true,
+        workersRemoved,
+        cachesRemoved,
+        workerFailures,
+        cacheFailures,
+      };
     }
 
     const doneText = `Reset complete: ${workersRemoved} service worker registration(s), ${cachesRemoved} Odysseus cache(s). Reloading fresh…`;

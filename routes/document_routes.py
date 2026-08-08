@@ -1519,9 +1519,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
         # as email_routes (ODYSSEUS_MAIL_ATTACHMENTS_DIR).
         from pathlib import Path as _Path
         import os as _os
-        _DATA_DIR = _Path(__file__).resolve().parent.parent / "data"
-        _BASE = _os.environ.get("ODYSSEUS_MAIL_ATTACHMENTS_DIR", str(_DATA_DIR / "mail-attachments"))
-        _COMPOSE_DIR = _Path(_BASE) / "_compose"
+        from routes.email_helpers import _compose_upload_path, COMPOSE_UPLOADS_DIR as _COMPOSE_DIR
         _COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
 
         user = get_current_user(request)
@@ -1619,9 +1617,11 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
 
             # 2) Move/copy into COMPOSE_UPLOADS_DIR with the token format
             #    `<uuid>_<original_name>` that /api/email/send expects.
+            #    Owner-scoped so another user cannot attach this PDF by token.
             filename = _slug(doc.title or "signed") + "_signed.pdf"
             token = f"{_uuid.uuid4().hex}_{filename}"
-            dest = _COMPOSE_DIR / token
+            dest = _compose_upload_path(user or "", token)
+            dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(out_path, str(dest))
             # Unlink the intermediate temp PDFs now that they've been
             # copied into COMPOSE_UPLOADS_DIR.

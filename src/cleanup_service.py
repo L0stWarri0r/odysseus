@@ -61,18 +61,31 @@ async def archive_inactive_sessions(session_manager, owner: Optional[str] = None
         q = _apply_owner_filter(q, DbSession, owner)
         sessions_to_archive = q.all()
 
+        archived_ids = []
         for session in sessions_to_archive:
             session.archived = True
             session.updated_at = _utcnow()
-            archived_count += 1
+            archived_ids.append(session.id)
 
-        if archived_count > 0:
+        if archived_ids:
             db.commit()
+            archived_count = len(archived_ids)
+            # Update the in-memory hot cache only after commit succeeds so a
+            # rollback cannot leave archived=True ghosts that never hit the DB.
+            try:
+                mem = getattr(session_manager, "sessions", None) or {}
+                for sid in archived_ids:
+                    cached = mem.get(sid)
+                    if cached is not None:
+                        cached.archived = True
+            except Exception:
+                pass
             logger.info(f"Archived {archived_count} inactive sessions")
 
     except Exception as e:
         logger.error(f"Error archiving sessions: {e}")
         db.rollback()
+        archived_count = 0
     finally:
         db.close()
 
