@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from fastapi import APIRouter, HTTPException, Request
@@ -49,6 +50,9 @@ def setup_hermes_routes() -> APIRouter:
     @router.get("/api/hermes/maintenance/status")
     async def hermes_maintenance_status(request: Request):
         _require_admin(request)
-        return build_maintenance_status()
+        # build_maintenance_status runs several synchronous git subprocesses
+        # (each with a 5s timeout). Keep them off the event loop so other
+        # requests are not stalled while System → Maintenance refreshes.
+        return await asyncio.to_thread(build_maintenance_status)
 
     return router
