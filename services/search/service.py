@@ -43,7 +43,9 @@ class SearchService:
 
     def __init__(self, default_depth: int = 1, fetch_content: bool = True):
         self.default_depth = default_depth
-        self.fetch_content = fetch_content
+        # Keep the constructor flag off the method name — assigning
+        # self.fetch_content = bool previously shadowed the async helper.
+        self.fetch_content_default = fetch_content
 
     async def search(
         self,

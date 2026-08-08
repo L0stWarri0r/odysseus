@@ -11,7 +11,7 @@ lost/personal-core tip 6dc5b4c:
 from __future__ import annotations
 
 import asyncio
-import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,12 +24,22 @@ from services.search.cache import (
 )
 from services.search.service import SearchService
 from src.hermes_control.maintenance import default_odysseus_repo
-from src import webhook_manager as wm
+
+# conftest.py stubs src.database; drop it so webhook_manager can import the real module.
+if "src.database" in sys.modules:
+    del sys.modules["src.database"]
+if "src.webhook_manager" in sys.modules:
+    del sys.modules["src.webhook_manager"]
+
+from src import webhook_manager as wm  # noqa: E402
 
 
 @pytest.mark.asyncio
 async def test_search_service_fetch_content_offloads_sync_helper():
-    svc = SearchService()
+    svc = SearchService(fetch_content=True)
+    # Constructor flag must not shadow the async method.
+    assert callable(svc.fetch_content)
+    assert svc.fetch_content_default is True
     fake = {
         "success": True,
         "content": "  hello from page  ",
