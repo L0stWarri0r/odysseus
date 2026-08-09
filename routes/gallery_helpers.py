@@ -135,6 +135,35 @@ def _owner_filter(q, user):
     return q.filter(GalleryImage.owner == user)
 
 
+def _find_owned_image_endpoint(db, user, *, endpoint_url: Optional[str] = None):
+    """Return an enabled image ModelEndpoint visible to ``user``.
+
+    When ``endpoint_url`` is provided, match that base URL (with/without /v1)
+    among owned/shared endpoints so API keys from other tenants cannot leak.
+    """
+    from core.database import ModelEndpoint
+    from src.auth_helpers import owner_filter as _ep_owner_filter
+
+    def _norm_url(u: str) -> str:
+        if not u:
+            return u
+        u = u.rstrip("/")
+        if u.endswith("/v1"):
+            u = u[:-3]
+        return u
+
+    q = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)  # noqa: E712
+    if user:
+        q = _ep_owner_filter(q, ModelEndpoint, user)
+    if endpoint_url:
+        target = _norm_url(endpoint_url)
+        for ep in q.all():
+            if _norm_url(ep.base_url) == target:
+                return ep
+        return None
+    return q.filter(ModelEndpoint.model_type == "image").first()
+
+
 
 def _human_size(nbytes):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
