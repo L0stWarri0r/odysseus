@@ -1,6 +1,5 @@
 """Core search orchestrators: searxng_search_results, comprehensive_web_search, config, cache invalidation."""
 
-import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -19,6 +18,9 @@ from .cache import (
     search_cache_index,
     generate_cache_key,
     cleanup_cache,
+    atomic_write_json,
+    read_json_cache,
+    _cache_lock,
 )
 from .query import _cache_duration_for_query
 from .ranking import rank_search_results
@@ -145,11 +147,10 @@ def searxng_search_results(query: str, count: int = 10, time_filter: str = None)
     cache_key = generate_cache_key(f"{query}|{count}|{time_filter}")
     cache_file = SEARCH_CACHE_DIR / f"{cache_key}.cache"
 
-    # Check cache
-    if cache_file.exists():
+    # Check cache (locked read; corrupt/partial files are deleted)
+    cached_data = read_json_cache(cache_file)
+    if cached_data is not None:
         try:
-            with open(cache_file, "r", encoding="utf-8") as f:
-                cached_data = json.load(f)
             expiry_raw = cached_data.get("expiry")
             expiry = datetime.fromisoformat(expiry_raw) if expiry_raw else None
             if expiry and datetime.now() < expiry:
@@ -157,13 +158,14 @@ def searxng_search_results(query: str, count: int = 10, time_filter: str = None)
                 results = cached_data["data"]
                 _record_query(query, bool(results), cache_hit=True)
                 return results
-            else:
+            with _cache_lock:
                 cache_file.unlink(missing_ok=True)
                 search_cache_index.pop(cache_key, None)
         except Exception as e:
-            logger.warning(f"Failed to read search cache for {query}: {e}")
-            cache_file.unlink(missing_ok=True)
-            search_cache_index.pop(cache_key, None)
+            logger.warning(f"Failed to parse search cache for {query}: {e}")
+            with _cache_lock:
+                cache_file.unlink(missing_ok=True)
+                search_cache_index.pop(cache_key, None)
 
     logger.debug(f"Search cache miss for query: {query}")
 
@@ -201,10 +203,10 @@ def searxng_search_results(query: str, count: int = 10, time_filter: str = None)
                 "expiry": expiry.isoformat(),
                 "data": results,
             }
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(cache_data, f)
-            search_cache_index[cache_key] = datetime.now()
-            cleanup_cache(SEARCH_CACHE_DIR, search_cache_index, timedelta(hours=1))
+            with _cache_lock:
+                atomic_write_json(cache_file, cache_data)
+                search_cache_index[cache_key] = datetime.now()
+                cleanup_cache(SEARCH_CACHE_DIR, search_cache_index, timedelta(hours=1))
         except Exception as e:
             logger.warning(f"Failed to write search cache for {query}: {e}")
 
@@ -220,12 +222,13 @@ def searxng_search_results(query: str, count: int = 10, time_filter: str = None)
 def invalidate_search_cache(query: Optional[str] = None) -> None:
     """Invalidate cached search results. None clears all, otherwise just the given query."""
     if query is None:
-        for file in SEARCH_CACHE_DIR.glob("*.cache"):
-            try:
-                file.unlink(missing_ok=True)
-            except Exception as e:
-                error_logger.warning(f"Failed to delete cache file {file}: {e}")
-        search_cache_index.clear()
+        with _cache_lock:
+            for file in SEARCH_CACHE_DIR.glob("*.cache"):
+                try:
+                    file.unlink(missing_ok=True)
+                except Exception as e:
+                    error_logger.warning(f"Failed to delete cache file {file}: {e}")
+            search_cache_index.clear()
         logger.info("All search cache entries have been cleared.")
     else:
         # Match the key the write path stores: searxng_search_results replaces
@@ -233,15 +236,16 @@ def invalidate_search_cache(query: Optional[str] = None) -> None:
         # (default 5), so a hardcoded "|10|None" never matched a real entry.
         cache_key = generate_cache_key(f"{query}|{_get_result_count()}|None")
         cache_file = SEARCH_CACHE_DIR / f"{cache_key}.cache"
-        if cache_file.exists():
-            try:
-                cache_file.unlink(missing_ok=True)
-                search_cache_index.pop(cache_key, None)
-                logger.info(f"Cache entry for query '{query}' has been invalidated.")
-            except Exception as e:
-                error_logger.warning(f"Failed to delete cache file for query '{query}': {e}")
-        else:
-            logger.info(f"No cache entry found for query '{query}'.")
+        with _cache_lock:
+            if cache_file.exists():
+                try:
+                    cache_file.unlink(missing_ok=True)
+                    search_cache_index.pop(cache_key, None)
+                    logger.info(f"Cache entry for query '{query}' has been invalidated.")
+                except Exception as e:
+                    error_logger.warning(f"Failed to delete cache file for query '{query}': {e}")
+            else:
+                logger.info(f"No cache entry found for query '{query}'.")
 
 
 # ----------------------------------------------------------------------

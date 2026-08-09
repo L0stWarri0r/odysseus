@@ -23,11 +23,17 @@ _CACHE_NAME_RE = re.compile(r"odysseus-[A-Za-z0-9_.-]+")
 
 
 def default_odysseus_repo() -> Path:
-    """Resolve the local Odysseus checkout path."""
+    """Resolve the local Odysseus checkout path.
+
+    Prefer ``ODYSSEUS_REPO`` when set. Otherwise use this package's checkout
+    root (``src/hermes_control/maintenance.py`` → repo root) so the status
+    panel reflects the running install instead of a hardcoded ``~/odysseus``
+    that often does not exist in container/cloud checkouts.
+    """
     env_repo = os.environ.get("ODYSSEUS_REPO")
     if env_repo:
         return Path(env_repo).expanduser()
-    return Path.home() / "odysseus"
+    return Path(__file__).resolve().parents[2]
 
 
 def default_intake_script() -> Path:
@@ -145,11 +151,22 @@ def build_maintenance_status(
             else:
                 repo_info["head_subject"] = subject
 
-            upstream, err = _safe_run(runner, ("git", "rev-parse", "--short", "upstream/main"), repo)
-            if err:
-                repo_info["errors"].append(f"upstream_main_failed: {err}")
-            else:
+            # Prefer the configured upstream/main tracking ref, then fall back
+            # to the current branch's @{upstream} / origin/main so personal
+            # forks without an `upstream` remote still report something useful.
+            upstream = None
+            upstream_err = None
+            for ref in ("upstream/main", "@{upstream}", "origin/main"):
+                value, err = _safe_run(runner, ("git", "rev-parse", "--short", ref), repo)
+                if value:
+                    upstream = value
+                    repo_info["upstream_ref"] = ref
+                    break
+                upstream_err = err or upstream_err
+            if upstream:
                 repo_info["upstream_main"] = upstream
+            elif upstream_err:
+                repo_info["errors"].append(f"upstream_main_failed: {upstream_err}")
 
     pwa = {
         "service_worker_exists": sw_path.exists(),

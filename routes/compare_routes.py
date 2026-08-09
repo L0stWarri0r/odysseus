@@ -58,16 +58,18 @@ def setup_compare_routes(session_manager: SessionManager):
                 rag=False,
                 owner=user,
             )
-            # Copy API key from endpoint config
+            # Copy API key from endpoint config (owner-scoped)
             db = SessionLocal()
             try:
                 from core.database import ModelEndpoint
+                from src.auth_helpers import owner_filter
                 from src.endpoint_resolver import build_headers, normalize_base
-                # Find matching endpoint by URL
+                # Find matching endpoint by URL among this user's endpoints
                 base = normalize_base(endpoint)
-                ep = db.query(ModelEndpoint).filter(
-                    ModelEndpoint.base_url == base
-                ).first()
+                q = db.query(ModelEndpoint).filter(ModelEndpoint.base_url == base)
+                if user:
+                    q = owner_filter(q, ModelEndpoint, user)
+                ep = q.first()
                 if ep and ep.api_key:
                     s = session_manager.sessions.get(sid)
                     if s:

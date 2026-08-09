@@ -3,7 +3,6 @@
 import copy
 import io
 import ipaddress
-import json
 import os
 import re
 import logging
@@ -21,6 +20,9 @@ from .cache import (
     content_cache_index,
     generate_cache_key,
     cleanup_cache,
+    atomic_write_json,
+    read_json_cache,
+    _cache_lock,
 )
 
 logger = logging.getLogger(__name__)
@@ -217,22 +219,21 @@ def fetch_webpage_content(url: str, timeout: int = 5, retry_attempt: int = 0) ->
     cache_key = generate_cache_key(url)
     cache_file = CONTENT_CACHE_DIR / f"{cache_key}.cache"
 
-    # Check cache
-    if cache_file.exists():
+    cached_data = read_json_cache(cache_file)
+    if cached_data is not None:
         try:
-            with open(cache_file, "r", encoding="utf-8") as f:
-                cached_data = json.load(f)
             timestamp = datetime.fromisoformat(cached_data["timestamp"])
             if datetime.now() - timestamp < timedelta(hours=2):
                 logger.debug(f"Content cache hit for URL: {url}")
                 return cached_data["data"]
-            else:
+            with _cache_lock:
                 cache_file.unlink(missing_ok=True)
                 content_cache_index.pop(cache_key, None)
         except Exception as e:
-            logger.warning(f"Failed to read content cache for {url}: {e}")
-            cache_file.unlink(missing_ok=True)
-            content_cache_index.pop(cache_key, None)
+            logger.warning(f"Failed to parse content cache for {url}: {e}")
+            with _cache_lock:
+                cache_file.unlink(missing_ok=True)
+                content_cache_index.pop(cache_key, None)
 
     # Fetch
     try:
@@ -350,13 +351,13 @@ def fetch_webpage_content(url: str, timeout: int = 5, retry_attempt: int = 0) ->
 
 
 def _cache_result(cache_file, cache_key: str, result: dict, url: str):
-    """Write a result to the content cache."""
+    """Write a result to the content cache atomically under the shared lock."""
     try:
         cache_data = {"timestamp": datetime.now().isoformat(), "data": result}
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(cache_data, f)
-        content_cache_index[cache_key] = datetime.now()
-        cleanup_cache(CONTENT_CACHE_DIR, content_cache_index, timedelta(hours=2))
+        with _cache_lock:
+            atomic_write_json(cache_file, cache_data)
+            content_cache_index[cache_key] = datetime.now()
+            cleanup_cache(CONTENT_CACHE_DIR, content_cache_index, timedelta(hours=2))
     except Exception as e:
         logger.warning(f"Failed to write content cache for {url}: {e}")
 

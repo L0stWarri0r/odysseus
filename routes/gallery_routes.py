@@ -16,6 +16,7 @@ from src.auth_helpers import get_current_user, require_privilege
 
 from routes.gallery_helpers import (
     GalleryPatch, _extract_exif, _image_to_dict, _owner_filter, _human_size,
+    _find_owned_image_endpoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -253,10 +254,11 @@ def setup_gallery_routes() -> APIRouter:
         image_bytes = await file.read()
         b64 = base64.b64encode(image_bytes).decode()
 
-        # Find image endpoint
+        # Find image endpoint (owner-scoped — do not borrow another tenant's key)
+        user = get_current_user(request)
         db = SessionLocal()
         try:
-            ep = db.query(ModelEndpoint).filter(ModelEndpoint.model_type == "image", ModelEndpoint.is_enabled == True).first()
+            ep = _find_owned_image_endpoint(db, user)
         finally:
             db.close()
 
@@ -297,9 +299,10 @@ def setup_gallery_routes() -> APIRouter:
         image_bytes = await file.read()
         b64 = base64.b64encode(image_bytes).decode()
 
+        user = get_current_user(request)
         db = SessionLocal()
         try:
-            ep = db.query(ModelEndpoint).filter(ModelEndpoint.model_type == "image", ModelEndpoint.is_enabled == True).first()
+            ep = _find_owned_image_endpoint(db, user)
         finally:
             db.close()
 
@@ -935,37 +938,25 @@ def setup_gallery_routes() -> APIRouter:
                 raise HTTPException(400, f"Rejected endpoint URL: {reason}")
         chosen_model = (body.pop("_model", "") or "").strip()
         api_key = None
+        user = get_current_user(request)
         if not base:
             db = SessionLocal()
             try:
-                eps = db.query(ModelEndpoint).filter(
-                    ModelEndpoint.is_enabled == True,
-                    ModelEndpoint.model_type == "image",
-                ).all()
-                if not eps:
+                ep = _find_owned_image_endpoint(db, user)
+                if not ep:
                     raise HTTPException(400, "No image generation endpoint configured. Serve a diffusion model via Cookbook first.")
-                base = eps[0].base_url.rstrip("/")
-                api_key = eps[0].api_key
+                base = ep.base_url.rstrip("/")
+                api_key = ep.api_key
             finally:
                 db.close()
         else:
-            # Pull api_key from the matching DB row so OpenAI auth works.
-            # Users may have stored base_url with/without /v1 suffix and with/without
-            # trailing slash, so compare normalized forms.
-            def _norm_url(u: str) -> str:
-                if not u:
-                    return u
-                u = u.rstrip("/")
-                if u.endswith("/v1"):
-                    u = u[:-3]
-                return u
-            _target = _norm_url(base)
+            # Pull api_key from the matching owned/shared DB row so OpenAI auth
+            # works without leaking another tenant's credentials.
             db = SessionLocal()
             try:
-                for ep in db.query(ModelEndpoint).all():
-                    if _norm_url(ep.base_url) == _target:
-                        api_key = ep.api_key
-                        break
+                ep = _find_owned_image_endpoint(db, user, endpoint_url=base)
+                if ep:
+                    api_key = ep.api_key
             finally:
                 db.close()
 
@@ -1141,26 +1132,23 @@ def setup_gallery_routes() -> APIRouter:
 
         base = endpoint
         api_key = None
+        user = get_current_user(request)
         if not base:
             db = SessionLocal()
             try:
-                eps = db.query(ModelEndpoint).filter(
-                    ModelEndpoint.is_enabled == True,
-                    ModelEndpoint.model_type == "image",
-                ).all()
-                if not eps:
+                ep = _find_owned_image_endpoint(db, user)
+                if not ep:
                     raise HTTPException(400, "No image generation endpoint configured.")
-                base = eps[0].base_url.rstrip("/")
-                api_key = eps[0].api_key
+                base = ep.base_url.rstrip("/")
+                api_key = ep.api_key
             finally:
                 db.close()
         else:
             db = SessionLocal()
             try:
-                for ep in db.query(ModelEndpoint).all():
-                    if ep.base_url.rstrip("/").removesuffix("/v1").rstrip("/") == base.rstrip("/").removesuffix("/v1").rstrip("/"):
-                        api_key = ep.api_key
-                        break
+                ep = _find_owned_image_endpoint(db, user, endpoint_url=base)
+                if ep:
+                    api_key = ep.api_key
             finally:
                 db.close()
 

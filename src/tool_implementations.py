@@ -943,7 +943,9 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
             if not task:
                 return {"error": f"Task {task_id} not found", "exit_code": 1}
-            if owner and task.owner and task.owner != owner:
+            # Fail closed on null/empty task.owner when a caller identity is set —
+            # otherwise any user can mutate orphaned or pre-migration rows.
+            if owner is not None and task.owner != owner:
                 return {"error": "Access denied", "exit_code": 1}
 
             changed = []
@@ -989,7 +991,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
             if not task:
                 return {"error": f"Task {task_id} not found", "exit_code": 1}
-            if owner and task.owner and task.owner != owner:
+            if owner is not None and task.owner != owner:
                 return {"error": "Access denied", "exit_code": 1}
             name = task.name
             db.delete(task)
@@ -1003,7 +1005,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
             if not task:
                 return {"error": f"Task {task_id} not found", "exit_code": 1}
-            if owner and task.owner and task.owner != owner:
+            if owner is not None and task.owner != owner:
                 return {"error": "Access denied", "exit_code": 1}
 
             if action == "pause":
@@ -1024,7 +1026,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
             task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
             if not task:
                 return {"error": f"Task {task_id} not found", "exit_code": 1}
-            if owner and task.owner and task.owner != owner:
+            if owner is not None and task.owner != owner:
                 return {"error": "Access denied", "exit_code": 1}
 
             from src.event_bus import get_task_scheduler
@@ -1853,6 +1855,17 @@ async def do_manage_notes(content: str, owner: Optional[str] = None) -> Dict:
         text = re.sub(r"^\s*reminder\s*:\s*", "", text)
         return re.sub(r"\s+", " ", text)
 
+    def _find_note(note_id: str):
+        """Prefix lookup scoped to the caller. Owner filter is in the query so
+        a short id cannot match another user's note first, and null-owner rows
+        fail closed when a caller identity is present."""
+        if not note_id:
+            return None
+        q = db.query(Note).filter(Note.id.startswith(note_id))
+        if owner is not None:
+            q = q.filter(Note.owner == owner)
+        return q.first()
+
     try:
         if action == "list":
             q = db.query(Note)
@@ -1960,11 +1973,9 @@ async def do_manage_notes(content: str, owner: Optional[str] = None) -> Dict:
 
         elif action == "update":
             note_id = args.get("id", "")
-            note = db.query(Note).filter(Note.id.startswith(note_id)).first() if note_id else None
+            note = _find_note(note_id)
             if not note:
                 return {"error": f"Note '{note_id}' not found", "exit_code": 1}
-            if owner is not None and note.owner and note.owner != owner:
-                return {"error": "Note not found", "exit_code": 1}
             for field in ("title", "content", "note_type", "color", "label"):
                 if field in args and args[field] is not None:
                     setattr(note, field, args[field])
@@ -1996,11 +2007,9 @@ async def do_manage_notes(content: str, owner: Optional[str] = None) -> Dict:
 
         elif action == "delete":
             note_id = args.get("id", "")
-            note = db.query(Note).filter(Note.id.startswith(note_id)).first() if note_id else None
+            note = _find_note(note_id)
             if not note:
                 return {"error": f"Note '{note_id}' not found", "exit_code": 1}
-            if owner is not None and note.owner and note.owner != owner:
-                return {"error": "Note not found", "exit_code": 1}
             title = note.title
             db.delete(note)
             db.commit()
@@ -2009,11 +2018,9 @@ async def do_manage_notes(content: str, owner: Optional[str] = None) -> Dict:
         elif action == "toggle_item":
             note_id = args.get("id", "")
             index = args.get("index", 0)
-            note = db.query(Note).filter(Note.id.startswith(note_id)).first() if note_id else None
+            note = _find_note(note_id)
             if not note:
                 return {"error": f"Note '{note_id}' not found", "exit_code": 1}
-            if owner is not None and note.owner and note.owner != owner:
-                return {"error": "Note not found", "exit_code": 1}
             if not note.items:
                 return {"error": "Note has no checklist items", "exit_code": 1}
             items = json.loads(note.items)
@@ -3700,7 +3707,13 @@ async def do_edit_image(content: str, owner: Optional[str] = None) -> Dict:
         payload["scale"] = args["scale"]
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(f"http://localhost:7000/api/gallery/{action}", json=payload)
+            # Stamp internal auth + caller owner so gallery routes attribute
+            # the edit correctly (and don't rely on LOCALHOST_BYPASS).
+            resp = await client.post(
+                f"{_COOKBOOK_BASE}/api/gallery/{action}",
+                json=payload,
+                headers=_internal_headers(owner=owner),
+            )
             data = resp.json()
         if data.get("success") or data.get("id"):
             return {"output": f"Image edited ({action}). New image ID: {data.get('id', '?')}", "exit_code": 0}
@@ -3742,6 +3755,15 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
         except Exception:
             return None
 
+    def _owns(d: dict) -> bool:
+        # Single-user / unscoped callers (owner is None/empty) keep legacy
+        # visibility. Authenticated multi-user callers only see their rows —
+        # null/missing owner fails closed so one user cannot read another's
+        # pre-migration or anonymous report.
+        if not owner:
+            return True
+        return (d.get("owner") or "") == owner
+
     if action in ("read", "open", "view", "get"):
         if not rid:
             return {"error": "Provide the research id (from action='list')."}
@@ -3749,6 +3771,8 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
         if not p.exists():
             return {"error": f"Research '{rid}' not found."}
         d = _load(p) or {}
+        if not _owns(d):
+            return {"error": f"Research '{rid}' not found."}
         summary = d.get("result") or d.get("raw_report") or d.get("summary") or d.get("report") or "(no report body)"
         srcs = d.get("sources", []) or []
         out = f"# {d.get('query', '(untitled)')}\n\n{summary}"
@@ -3763,6 +3787,9 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
             return {"error": "Provide the research id to delete (from action='list')."}
         p = data_dir / f"{rid}.json"
         if p.exists():
+            d = _load(p) or {}
+            if not _owns(d):
+                return {"error": f"Research '{rid}' not found."}
             try:
                 p.unlink()
             except Exception as e:
@@ -3776,7 +3803,7 @@ async def do_manage_research(content: str, owner: Optional[str] = None) -> Dict:
     if data_dir.exists():
         for p in data_dir.glob("*.json"):
             d = _load(p)
-            if not d:
+            if not d or not _owns(d):
                 continue
             q = d.get("query", "")
             if search and search not in q.lower():
