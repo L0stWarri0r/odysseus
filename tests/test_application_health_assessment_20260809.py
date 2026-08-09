@@ -150,8 +150,18 @@ def test_resolve_model_scopes_endpoints_by_owner():
 def test_research_owned_endpoint_helper_filters_foreign_rows():
     from routes.research_routes import _owned_enabled_endpoint
 
-    alice = SimpleNamespace(id="ep-a", owner="alice", is_enabled=True)
-    bob = SimpleNamespace(id="ep-b", owner="bob", is_enabled=True)
+    class _EP:
+        id = "id"
+        owner = "owner"
+        is_enabled = True
+
+        def __init__(self, id, owner):
+            self.id = id
+            self.owner = owner
+            self.is_enabled = True
+
+    alice = _EP("ep-a", "alice")
+    bob = _EP("ep-b", "bob")
 
     class _Q:
         def __init__(self, rows):
@@ -174,8 +184,8 @@ def test_research_owned_endpoint_helper_filters_foreign_rows():
         query.rows = [r for r in query.rows if r.owner == user]
         return query
 
-    with patch("src.auth_helpers.owner_filter", side_effect=_of), patch(
-        "src.database.ModelEndpoint", SimpleNamespace
+    with patch("routes.research_routes.owner_filter", side_effect=_of), patch(
+        "src.database.ModelEndpoint", _EP
     ):
         assert _owned_enabled_endpoint(_DB([alice, bob]), None, "alice") is alice
         # After owner filter, bob-only list yields nothing for alice.
