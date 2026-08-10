@@ -125,6 +125,95 @@ def validate_webhook_url(url: str) -> str:
     return url
 
 
+def _pick_public_connect_ip(hostname: str) -> str:
+    """Resolve ``hostname`` and return one public IP string.
+
+    Raises ValueError when the name is missing, unresolvable, or any/all
+    records are private (fail closed — same policy as validate_webhook_url).
+    """
+    host = (hostname or "").strip()
+    if not host:
+        raise ValueError("URL must have a hostname")
+    try:
+        literal = ipaddress.ip_address(host.strip("[]"))
+        if _ip_is_private(literal):
+            raise ValueError("URL must not point to private/internal addresses")
+        return str(literal)
+    except ValueError as exc:
+        # Re-raise our private-IP rejection; otherwise treat as hostname.
+        if "private/internal" in str(exc):
+            raise
+    addrs = _resolve_hostname_ips(host)
+    if not addrs:
+        raise ValueError("URL must not point to private/internal addresses")
+    if any(_ip_is_private(a) for a in addrs):
+        # Any private record → reject (rebinding / dual-homed names).
+        raise ValueError("URL must not point to private/internal addresses")
+    v4 = [a for a in addrs if isinstance(a, ipaddress.IPv4Address)]
+    return str(v4[0] if v4 else addrs[0])
+
+
+async def _post_to_resolved_public_url(url: str, body: str, headers: dict) -> int:
+    """POST to ``url`` after pinning the TCP peer to a resolved public IP.
+
+    Closes the DNS-rebinding window between validate_webhook_url() and the
+    actual connect: httpx would re-resolve the hostname independently.
+    For HTTPS, SNI/cert verification still use the original hostname.
+    """
+    import ssl
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    scheme = parsed.scheme
+    port = parsed.port or (443 if scheme == "https" else 80)
+    connect_ip = _pick_public_connect_ip(hostname)
+
+    ssl_ctx = ssl.create_default_context() if scheme == "https" else None
+    # server_hostname keeps SNI + cert CN/SAN checks on the real name while
+    # the TCP peer is the pinned public IP.
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(
+            connect_ip,
+            port,
+            ssl=ssl_ctx,
+            server_hostname=hostname if ssl_ctx else None,
+        ),
+        timeout=10,
+    )
+    try:
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        host_header = hostname if not parsed.port else f"{hostname}:{parsed.port}"
+        body_bytes = body.encode("utf-8") if isinstance(body, str) else body
+        lines = [f"POST {path} HTTP/1.1", f"Host: {host_header}"]
+        for key, value in (headers or {}).items():
+            if str(key).lower() == "host":
+                continue
+            lines.append(f"{key}: {value}")
+        lines.append(f"Content-Length: {len(body_bytes)}")
+        lines.append("Connection: close")
+        lines.append("")
+        writer.write("\r\n".join(lines).encode("utf-8") + b"\r\n" + body_bytes)
+        await writer.drain()
+
+        status_line = await asyncio.wait_for(reader.readline(), timeout=10)
+        parts = status_line.decode("latin-1", errors="replace").strip().split()
+        status_code = int(parts[1]) if len(parts) >= 2 else 0
+        # Consume headers so the peer can finish cleanly; body ignored.
+        while True:
+            line = await asyncio.wait_for(reader.readline(), timeout=10)
+            if line in (b"", b"\r\n", b"\n"):
+                break
+        return status_code
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+
 def validate_events(events_str: str) -> str:
     """Validate comma-separated event names. Returns cleaned string."""
     events = [e.strip() for e in events_str.split(",") if e.strip()]
@@ -256,10 +345,12 @@ class WebhookManager:
 
         db = SessionLocal()
         try:
-            resp = await self._client.post(url, content=body, headers=headers)
+            # Pin TCP peer to the resolved public IP so a rebinding DNS
+            # answer between validate and connect cannot reach RFC1918/metadata.
+            status_code = await _post_to_resolved_public_url(url, body, headers)
             db.query(Webhook).filter(Webhook.id == webhook_id).update({
                 "last_triggered_at": _utcnow(),
-                "last_status_code": resp.status_code,
+                "last_status_code": status_code,
                 "last_error": None,
             })
             db.commit()

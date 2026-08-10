@@ -455,17 +455,23 @@ def _init_scheduled_db():
         # Best-effort — log via the module logger if available
         import logging as _lg
         _lg.getLogger(__name__).warning(f"email_tags owner-migration skipped: {_mig_e}")
+    # Calendar / urgency / boundary caches — same (message_id, owner) keying as
+    # summaries/replies. Message-IDs are global (newsletters), so a bare
+    # message_id PK lets user A's extraction/boundaries bleed into user B.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_calendar_extractions (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             events_created INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_urgency_alerts (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             subject TEXT,
@@ -473,7 +479,8 @@ def _init_scheduled_db():
             urgency TEXT,
             reason TEXT,
             alerted INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
     conn.execute("""
@@ -491,15 +498,77 @@ def _init_scheduled_db():
     # client uses these to fold without ever re-calling the LLM.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_boundaries (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             sig_start INTEGER,
             quote_start INTEGER,
             model_used TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            turns_json TEXT,
+            PRIMARY KEY (message_id, owner)
         )
     """)
+    # Rebuild legacy message_id-only PKs for calendar/urgency/boundaries.
+    for _tbl, _cols_sql, _copy_sql in (
+        (
+            "email_calendar_extractions",
+            """CREATE TABLE IF NOT EXISTS email_calendar_extractions__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT,
+                    events_created INTEGER DEFAULT 0, created_at TEXT NOT NULL,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_calendar_extractions__new
+                  (message_id, owner, uid, events_created, created_at)
+                SELECT message_id, COALESCE(owner, ''), uid, events_created, created_at
+                FROM email_calendar_extractions""",
+        ),
+        (
+            "email_urgency_alerts",
+            """CREATE TABLE IF NOT EXISTS email_urgency_alerts__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT, folder TEXT,
+                    subject TEXT, sender TEXT, urgency TEXT, reason TEXT,
+                    alerted INTEGER DEFAULT 0, created_at TEXT NOT NULL,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_urgency_alerts__new
+                  (message_id, owner, uid, folder, subject, sender, urgency, reason, alerted, created_at)
+                SELECT message_id, COALESCE(owner, ''), uid, folder, subject, sender,
+                       urgency, reason, alerted, created_at FROM email_urgency_alerts""",
+        ),
+        (
+            "email_boundaries",
+            """CREATE TABLE IF NOT EXISTS email_boundaries__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT, folder TEXT,
+                    sig_start INTEGER, quote_start INTEGER, model_used TEXT,
+                    created_at TEXT NOT NULL, turns_json TEXT,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_boundaries__new
+                  (message_id, owner, uid, folder, sig_start, quote_start, model_used, created_at, turns_json)
+                SELECT message_id, COALESCE(owner, ''), uid, folder, sig_start, quote_start,
+                       model_used, created_at, turns_json FROM email_boundaries""",
+        ),
+    ):
+        try:
+            _info = list(conn.execute(f"PRAGMA table_info({_tbl})"))
+            _col_names = [r[1] for r in _info]
+            _pk_cols = [r[1] for r in sorted(_info, key=lambda r: r[5] or 0) if r[5]]
+            needs_rebuild = ("owner" not in _col_names) or (_pk_cols == ["message_id"])
+            if needs_rebuild:
+                if "owner" not in _col_names:
+                    conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN owner TEXT DEFAULT ''")
+                # turns_json may be missing on very old boundary tables.
+                if _tbl == "email_boundaries" and "turns_json" not in _col_names:
+                    conn.execute("ALTER TABLE email_boundaries ADD COLUMN turns_json TEXT")
+                conn.execute(_cols_sql)
+                conn.execute(_copy_sql)
+                conn.execute(f"DROP TABLE {_tbl}")
+                conn.execute(f"ALTER TABLE {_tbl}__new RENAME TO {_tbl}")
+        except Exception as _mig_e:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(f"{_tbl} owner-migration skipped: {_mig_e}")
     # Lazy migration: add account_id column to scheduled_emails if missing
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(scheduled_emails)").fetchall()]

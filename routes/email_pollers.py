@@ -258,12 +258,22 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                 _tag_existing = {r[0] for r in _c.execute("SELECT message_id FROM email_tags WHERE owner='' OR owner IS NULL").fetchall()}
         else:
             _tag_existing = set()
-        _cal_existing = {r[0] for r in _c.execute("SELECT message_id FROM email_calendar_extractions").fetchall()} if auto_cal else set()
+        _cal_existing = {
+            r[0] for r in _c.execute(
+                "SELECT message_id FROM email_calendar_extractions WHERE owner = ?",
+                (account_owner or "",),
+            ).fetchall()
+        } if auto_cal else set()
         # Urgency is handled by the built-in `check_email_urgency` task. Keep
         # this legacy poller path disabled so users don't get two independent
         # urgent-email systems.
         auto_urgent = False
-        _urgent_existing = {r[0] for r in _c.execute("SELECT message_id FROM email_urgency_alerts").fetchall()} if auto_urgent else set()
+        _urgent_existing = {
+            r[0] for r in _c.execute(
+                "SELECT message_id FROM email_urgency_alerts WHERE owner = ?",
+                (account_owner or "",),
+            ).fetchall()
+        } if auto_urgent else set()
         _c.close()
 
         # Hoist the self-address lookup OUT of the per-email loop — fetching
@@ -681,8 +691,9 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                         _cc = _sql3.connect(SCHEDULED_DB)
                         _cc.execute(
                             "INSERT OR REPLACE INTO email_calendar_extractions "
-                            "(message_id, uid, events_created, created_at) VALUES (?, ?, ?, ?)",
-                            (message_id, uid.decode() if isinstance(uid, bytes) else str(uid),
+                            "(message_id, owner, uid, events_created, created_at) VALUES (?, ?, ?, ?, ?)",
+                            (message_id, account_owner or "",
+                             uid.decode() if isinstance(uid, bytes) else str(uid),
                              _cal_run_count, datetime.utcnow().isoformat())
                         )
                         _cc.commit()
@@ -739,9 +750,10 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                                 _uc = _sql3.connect(SCHEDULED_DB)
                                 _uc.execute(
                                     "INSERT OR REPLACE INTO email_urgency_alerts "
-                                    "(message_id, uid, folder, subject, sender, urgency, reason, alerted, created_at) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                    (message_id, uid.decode() if isinstance(uid, bytes) else str(uid),
+                                    "(message_id, owner, uid, folder, subject, sender, urgency, reason, alerted, created_at) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    (message_id, account_owner or "",
+                                     uid.decode() if isinstance(uid, bytes) else str(uid),
                                      _folder, subject, sender, urgency, reason,
                                      1 if urgency in ("critical", "high") else 0,
                                      datetime.utcnow().isoformat())

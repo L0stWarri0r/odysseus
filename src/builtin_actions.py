@@ -815,15 +815,17 @@ async def action_mark_email_boundaries(owner: str, **kwargs) -> Tuple[str, bool]
         if not mails:
             raise TaskNoop("no emails to analyze")
 
-        url, model, headers = resolve_endpoint("utility")
+        url, model, headers = resolve_endpoint("utility", owner=owner)
         if not url or not model:
-            url, model, headers = resolve_endpoint("default")
+            url, model, headers = resolve_endpoint("default", owner=owner)
         if not url or not model:
             return "No LLM endpoint available", False
 
+        _owner_key = owner or ""
         c = _sql3.connect(SCHEDULED_DB)
         already = {r[0] for r in c.execute(
-            "SELECT message_id FROM email_boundaries"
+            "SELECT message_id FROM email_boundaries WHERE owner = ?",
+            (_owner_key,),
         ).fetchall()}
         c.close()
 
@@ -936,9 +938,9 @@ async def action_mark_email_boundaries(owner: str, **kwargs) -> Tuple[str, bool]
                 c = _sql3.connect(SCHEDULED_DB)
                 c.execute(
                     "INSERT OR REPLACE INTO email_boundaries "
-                    "(message_id, uid, folder, sig_start, quote_start, model_used, created_at, turns_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mid, str(uid), "INBOX", sig, quote, model, _dt.utcnow().isoformat(), turns_json),
+                    "(message_id, owner, uid, folder, sig_start, quote_start, model_used, created_at, turns_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mid, _owner_key, str(uid), "INBOX", sig, quote, model, _dt.utcnow().isoformat(), turns_json),
                 )
                 c.commit()
                 c.close()

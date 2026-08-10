@@ -1232,8 +1232,9 @@ def setup_email_routes():
                 if _row2:
                     cached_ai_reply = _apply_email_style_mechanics(_extract_reply(_row2[0] or ""))
                 _row3 = _c.execute(
-                    "SELECT sig_start, quote_start, turns_json FROM email_boundaries WHERE message_id = ?",
-                    (message_id.strip(),),
+                    "SELECT sig_start, quote_start, turns_json FROM email_boundaries "
+                    "WHERE message_id = ? AND owner = ?",
+                    (message_id.strip(), owner or ""),
                 ).fetchone()
                 cached_turns = None
                 cached_sender_sig = None
