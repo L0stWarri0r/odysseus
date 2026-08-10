@@ -61,6 +61,36 @@ def _validate_caldav_ip(host: str) -> None:
         raise ValueError("Private CalDAV IPs require ODYSSEUS_ALLOW_PRIVATE_CALDAV=1")
 
 
+def _validate_caldav_hostname_dns(host: str) -> None:
+    """Reject hostnames that resolve to loopback/link-local/private (unless allowed).
+
+    validate_caldav_url previously only checked IP literals, so a name that
+    resolved to 10.x/169.254.169.254 slipped through.
+    """
+    import socket
+
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return  # literal — already handled by _validate_caldav_ip
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception as exc:
+        raise ValueError(f"CalDAV URL host could not be resolved: {exc}") from exc
+    if not infos:
+        raise ValueError("CalDAV URL host could not be resolved")
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+            raise ValueError("CalDAV URL host is not allowed")
+        if ip.is_private and not _private_caldav_allowed():
+            raise ValueError("Private CalDAV IPs require ODYSSEUS_ALLOW_PRIVATE_CALDAV=1")
+
+
 def validate_caldav_url(raw_url: str) -> str:
     """Validate and normalize a user-provided CalDAV URL before server-side use."""
     url = (raw_url if isinstance(raw_url, str) else "").strip()
@@ -83,6 +113,7 @@ def validate_caldav_url(raw_url: str) -> str:
     if host in _BLOCKED_HOSTS or host.endswith(".localhost"):
         raise ValueError("CalDAV URL host is not allowed")
     _validate_caldav_ip(host)
+    _validate_caldav_hostname_dns(host)
     return urlunparse(parsed._replace(fragment="")).rstrip("/")
 
 

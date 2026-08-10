@@ -39,7 +39,31 @@ def _relative(path: Path, base: Path) -> str:
     try:
         return path.relative_to(base).as_posix()
     except ValueError:
-        return path.as_posix()
+        # Symlink / escape outside Hermes home — never leak the absolute path
+        # into the inventory JSON (callers are often remote admin UIs).
+        return f"<outside-base>/{path.name}"
+
+
+_MAX_INVENTORY_FILES = 200
+
+
+def _bounded_rglob(directory: Path, pattern: str, limit: int = _MAX_INVENTORY_FILES) -> list[Path]:
+    """Collect matching paths under directory, capped to bound CPU/memory.
+
+    Unbounded rglob on a large skills/profile tree could DoS the admin
+    inventory endpoint and produce huge JSON responses.
+    """
+    if not directory.exists():
+        return []
+    out: list[Path] = []
+    try:
+        for path in directory.rglob(pattern):
+            out.append(path)
+            if len(out) >= limit:
+                break
+    except OSError:
+        return out
+    return sorted(out)
 
 
 def _file_entry(path: Path, base: Path) -> dict[str, Any]:
@@ -122,9 +146,14 @@ def build_continuity_inventory(hermes_home: str | os.PathLike[str] | None = None
     profiles_dir = base / "profiles"
 
     memory_files = [_file_entry(memory_dir / name, base) for name in _MEMORY_FILENAMES]
-    profile_markdown = sorted(profile_dir.rglob("*.md")) if profile_dir.exists() else []
-    skill_files = sorted(skills_dir.rglob("SKILL.md")) if skills_dir.exists() else []
-    profile_names = sorted(path.name for path in profiles_dir.iterdir() if path.is_dir()) if profiles_dir.exists() else []
+    profile_markdown = _bounded_rglob(profile_dir, "*.md")
+    skill_files = _bounded_rglob(skills_dir, "SKILL.md")
+    try:
+        profile_names = sorted(
+            path.name for path in profiles_dir.iterdir() if path.is_dir()
+        ) if profiles_dir.exists() else []
+    except OSError:
+        profile_names = []
 
     privacy_warnings = [
         "Inventory is read-only and returns counts/metadata only; memory and transcript contents are not returned.",
@@ -134,6 +163,10 @@ def build_continuity_inventory(hermes_home: str | os.PathLike[str] | None = None
         privacy_warnings.append("Hermes home was not found at the resolved path.")
     if profile_names:
         privacy_warnings.append("Additional Hermes profiles were detected; import/sync should preserve profile privacy boundaries.")
+    if len(profile_markdown) >= _MAX_INVENTORY_FILES or len(skill_files) >= _MAX_INVENTORY_FILES:
+        privacy_warnings.append(
+            f"Inventory file listing was capped at {_MAX_INVENTORY_FILES} entries per category."
+        )
 
     return {
         "hermes_home": str(base),

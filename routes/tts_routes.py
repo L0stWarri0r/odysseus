@@ -3,10 +3,13 @@
 TTS API routes — multi-provider (local Kokoro, API endpoint, browser).
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 import logging
+
+from core.middleware import require_admin
+from src.auth_helpers import require_user
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +22,9 @@ def setup_tts_routes(tts_service):
     router = APIRouter(prefix="/api/tts", tags=["tts"])
 
     @router.get("/stats")
-    async def get_tts_stats():
+    async def get_tts_stats(http_request: Request):
         """Get TTS service statistics"""
+        require_user(http_request)
         try:
             return tts_service.get_stats()
         except Exception as e:
@@ -28,8 +32,9 @@ def setup_tts_routes(tts_service):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/synthesize")
-    async def synthesize_speech(request: TTSRequest):
+    async def synthesize_speech(request: TTSRequest, http_request: Request):
         """Synthesize speech from text"""
+        require_user(http_request)
         try:
             if not tts_service.available:
                 raise HTTPException(
@@ -75,8 +80,9 @@ def setup_tts_routes(tts_service):
             )
 
     @router.post("/clear-cache")
-    async def clear_tts_cache():
-        """Clear TTS cache"""
+    async def clear_tts_cache(http_request: Request):
+        """Clear TTS cache — admin only (shared process-wide cache)."""
+        require_admin(http_request)
         try:
             tts_service.clear_cache()
             return {"success": True, "message": "Cache cleared"}

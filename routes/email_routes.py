@@ -37,7 +37,7 @@ from src.llm_core import llm_call_async
 
 from routes.email_helpers import (
     _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account,
-    _q, _attach_compose_uploads, _cleanup_compose_uploads,
+    _q, _attach_compose_uploads, _cleanup_compose_uploads, _compose_upload_path,
     _load_settings, _save_settings, _get_email_config,
     _send_smtp_message, _smtp_security_mode,
     _IMAP_TIMEOUT_SECONDS, _open_imap_connection,
@@ -932,9 +932,11 @@ def setup_email_routes():
                     import sqlite3 as _sql3
                     _c = _sql3.connect(SCHEDULED_DB)
                     placeholders = ",".join("?" * len(ids))
+                    # Owner-scope: Message-IDs collide across tenants.
                     rows = _c.execute(
-                        f"SELECT message_id, summary FROM email_summaries WHERE message_id IN ({placeholders})",
-                        ids,
+                        f"SELECT message_id, summary FROM email_summaries "
+                        f"WHERE owner = ? AND message_id IN ({placeholders})",
+                        [owner, *ids],
                     ).fetchall()
                     _c.close()
                     by_id = {r[0]: r[1] for r in rows}
@@ -1218,20 +1220,21 @@ def setup_email_routes():
                 import sqlite3 as _sql3
                 _c = _sql3.connect(SCHEDULED_DB)
                 _row = _c.execute(
-                    "SELECT summary FROM email_summaries WHERE message_id = ?",
-                    (message_id.strip(),),
+                    "SELECT summary FROM email_summaries WHERE message_id = ? AND owner = ?",
+                    (message_id.strip(), owner or ""),
                 ).fetchone()
                 if _row:
                     cached_summary = _row[0]
                 _row2 = _c.execute(
-                    "SELECT reply FROM email_ai_replies WHERE message_id = ?",
-                    (message_id.strip(),),
+                    "SELECT reply FROM email_ai_replies WHERE message_id = ? AND owner = ?",
+                    (message_id.strip(), owner or ""),
                 ).fetchone()
                 if _row2:
                     cached_ai_reply = _apply_email_style_mechanics(_extract_reply(_row2[0] or ""))
                 _row3 = _c.execute(
-                    "SELECT sig_start, quote_start, turns_json FROM email_boundaries WHERE message_id = ?",
-                    (message_id.strip(),),
+                    "SELECT sig_start, quote_start, turns_json FROM email_boundaries "
+                    "WHERE message_id = ? AND owner = ?",
+                    (message_id.strip(), owner or ""),
                 ).fetchone()
                 cached_turns = None
                 cached_sender_sig = None
@@ -1886,7 +1889,8 @@ def setup_email_routes():
             # Sanitize filename and generate a unique token
             safe_name = re.sub(r"[^\w\s\-.]", "_", file.filename or "file").strip()
             token = f"{uuid.uuid4().hex}_{safe_name}"
-            filepath = COMPOSE_UPLOADS_DIR / token
+            filepath = _compose_upload_path(owner, token)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
             content = await file.read()
             if len(content) > MAX_BYTES:
                 raise HTTPException(413, f"Attachment exceeds {MAX_BYTES // (1024*1024)}MB limit")
@@ -1908,9 +1912,9 @@ def setup_email_routes():
     async def delete_compose_upload(token: str, owner: str = Depends(require_owner)):
         """Delete a staged compose upload."""
         try:
-            # Prevent path traversal
-            safe_token = Path(token).name
-            filepath = COMPOSE_UPLOADS_DIR / safe_token
+            # Owner-scoped path prevents deleting another user's staged file
+            # even when the UUID token is known.
+            filepath = _compose_upload_path(owner, token)
             if filepath.exists():
                 filepath.unlink()
             return {"success": True}
@@ -1955,13 +1959,13 @@ def setup_email_routes():
 
         if has_atts:
             outer.attach(body_container)
-            _attach_compose_uploads(outer, attachments)
+            _attach_compose_uploads(outer, attachments, owner=owner)
 
         recipients = _envelope_recipients(to, cc, bcc)
 
         _send_smtp_message(cfg, cfg["from_address"], recipients, outer.as_string())
 
-        _cleanup_compose_uploads(attachments)
+        _cleanup_compose_uploads(attachments, owner=owner)
 
     @router.post("/schedule")
     async def schedule_email(req: dict, owner: str = Depends(require_owner)):
@@ -2169,7 +2173,7 @@ def setup_email_routes():
 
         if has_attachments:
             outer.attach(body_container)
-            _attach_compose_uploads(outer, req.attachments)
+            _attach_compose_uploads(outer, req.attachments, owner=owner)
 
         # Build recipient list (parse the address grammar so display names with
         # commas don't get split into broken envelope addresses)
@@ -2274,7 +2278,7 @@ def setup_email_routes():
                         }
                 except Exception as e:
                     logger.warning(f"Failed to append to Sent: {e}")
-                _cleanup_compose_uploads(_atts)
+                _cleanup_compose_uploads(_atts, owner=owner)
                 return delivery_result
             except Exception as e:
                 logger.error(f"Failed to send email to {_to_label}: {e}")
@@ -2551,10 +2555,10 @@ def setup_email_routes():
                     _c = _sql3.connect(SCHEDULED_DB)
                     _c.execute("""
                         INSERT OR REPLACE INTO email_summaries
-                        (message_id, uid, folder, subject, sender, summary, model_used, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (message_id, owner, uid, folder, subject, sender, summary, model_used, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        mid, data.get("uid", ""), data.get("folder", ""),
+                        mid, owner or "", data.get("uid", ""), data.get("folder", ""),
                         subject, sender, content, model, datetime.utcnow().isoformat(),
                     ))
                     _c.commit()
@@ -2590,8 +2594,8 @@ def setup_email_routes():
                 try:
                     _c = _sql3.connect(SCHEDULED_DB)
                     _row = _c.execute(
-                        "SELECT reply, model_used FROM email_ai_replies WHERE message_id = ?",
-                        (message_id,),
+                        "SELECT reply, model_used FROM email_ai_replies WHERE message_id = ? AND owner = ?",
+                        (message_id, owner or ""),
                     ).fetchone()
                     _c.close()
                     if _row and _row[0]:
@@ -2793,9 +2797,9 @@ def setup_email_routes():
                     _c = _sql3.connect(SCHEDULED_DB)
                     _c.execute("""
                         INSERT OR REPLACE INTO email_ai_replies
-                        (message_id, uid, folder, reply, model_used, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (message_id, source_uid, source_folder, reply, model, datetime.utcnow().isoformat()))
+                        (message_id, owner, uid, folder, reply, model_used, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (message_id, owner or "", source_uid, source_folder, reply, model, datetime.utcnow().isoformat()))
                     _c.commit()
                     _c.close()
                 except Exception as e:

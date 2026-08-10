@@ -1,6 +1,7 @@
 # services/search/service.py
 """Search service — clean interface for web search."""
 
+import asyncio
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 
@@ -42,7 +43,9 @@ class SearchService:
 
     def __init__(self, default_depth: int = 1, fetch_content: bool = True):
         self.default_depth = default_depth
-        self.fetch_content = fetch_content
+        # Keep the constructor flag off the method name — assigning
+        # self.fetch_content = bool previously shadowed the async helper.
+        self.fetch_content_default = fetch_content
 
     async def search(
         self,
@@ -68,7 +71,6 @@ class SearchService:
         # loop so we don't block it, and use the source list as the result rows.
         # `fetch_content` is accepted for API compatibility; the comprehensive
         # search always fetches page content.
-        import asyncio
         _context, raw_results = await asyncio.to_thread(
             comprehensive_web_search,
             query,
@@ -94,8 +96,20 @@ class SearchService:
         )
 
     async def fetch_content(self, url: str) -> Optional[str]:
-        """Fetch content from a URL."""
-        return await fetch_webpage_content(url)
+        """Fetch page text for a URL without blocking the event loop.
+
+        ``fetch_webpage_content`` is synchronous and returns a dict; awaiting
+        it directly raises TypeError. Offload to a worker thread and surface
+        the extracted text (or None on failure / empty body).
+        """
+        result = await asyncio.to_thread(fetch_webpage_content, url)
+        if not isinstance(result, dict) or not result.get("success"):
+            return None
+        content = result.get("content")
+        if not isinstance(content, str):
+            return None
+        content = content.strip()
+        return content or None
 
     def get_config(self) -> Dict[str, Any]:
         """Get current search configuration."""

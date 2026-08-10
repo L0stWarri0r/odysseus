@@ -1,8 +1,10 @@
 # routes/stt_routes.py
 """STT API routes — multi-provider (local Whisper, API endpoint, browser)."""
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 import logging
+
+from src.auth_helpers import require_user
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +14,9 @@ def setup_stt_routes(stt_service):
     router = APIRouter(prefix="/api/stt", tags=["stt"])
 
     @router.get("/stats")
-    async def get_stt_stats():
+    async def get_stt_stats(http_request: Request):
         """Get STT service statistics"""
+        require_user(http_request)
         try:
             return stt_service.get_stats()
         except Exception as e:
@@ -21,8 +24,9 @@ def setup_stt_routes(stt_service):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/transcribe")
-    async def transcribe_audio(file: UploadFile = File(...)):
+    async def transcribe_audio(http_request: Request, file: UploadFile = File(...)):
         """Transcribe uploaded audio file to text"""
+        require_user(http_request)
         try:
             if not stt_service.available:
                 raise HTTPException(

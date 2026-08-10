@@ -61,18 +61,19 @@ class Session:
         if self.headers is None:
             self.headers = {}
 
-    def add_message(self, message: ChatMessage):
+    def add_message(self, message: ChatMessage, *, persist: bool = True):
         """
         Add a message to this session.
 
         Delegates to SessionManager for persistence if available,
-        otherwise just appends to history.
+        otherwise just appends to history. Pass persist=False for
+        incognito/ephemeral turns that must stay in-memory only.
         """
         self.history.append(message)
         self.message_count = len(self.history)
 
         # Delegate to session manager for persistence
-        if _session_manager:
+        if persist and _session_manager:
             _session_manager._persist_message(self.id, message)
 
     def get_context_messages(self) -> List[Dict[str, Any]]:

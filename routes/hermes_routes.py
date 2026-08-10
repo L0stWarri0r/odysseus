@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from fastapi import APIRouter, HTTPException, Request
@@ -31,16 +32,27 @@ def setup_hermes_routes() -> APIRouter:
     router = APIRouter(tags=["hermes"])
 
     @router.post("/api/hermes/preflight")
-    async def hermes_preflight(context: HermesRequestContext):
+    async def hermes_preflight(request: Request, context: HermesRequestContext):
+        # Policy evaluation for diagnostics / tooling only. Chat applies the
+        # same evaluate() in-process via chat_integration — this HTTP surface
+        # must not be open to every session user or chat-scoped API token.
+        _require_admin(request)
         return evaluate(context).model_dump(mode="json")
 
     @router.get("/api/hermes/continuity/inventory")
-    async def hermes_continuity_inventory():
+    async def hermes_continuity_inventory(request: Request):
+        # Host path + profile/session counts are sensitive metadata. Gate like
+        # maintenance status — any logged-in user / ody_ bearer used to be able
+        # to probe HERMES_HOME layout without admin.
+        _require_admin(request)
         return build_continuity_inventory()
 
     @router.get("/api/hermes/maintenance/status")
     async def hermes_maintenance_status(request: Request):
         _require_admin(request)
-        return build_maintenance_status()
+        # build_maintenance_status runs several synchronous git subprocesses
+        # (each with a 5s timeout). Keep them off the event loop so other
+        # requests are not stalled while System → Maintenance refreshes.
+        return await asyncio.to_thread(build_maintenance_status)
 
     return router

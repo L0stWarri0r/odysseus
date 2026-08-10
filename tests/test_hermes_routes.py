@@ -4,8 +4,22 @@ from fastapi.testclient import TestClient
 from routes.hermes_routes import setup_hermes_routes
 
 
-def _client() -> TestClient:
+class FakeAuthManager:
+    is_configured = True
+
+    def is_admin(self, username):
+        return username == "admin"
+
+
+def _client(username: str = "admin") -> TestClient:
     app = FastAPI()
+    app.state.auth_manager = FakeAuthManager()
+
+    @app.middleware("http")
+    async def _stamp_user(request, call_next):
+        request.state.current_user = username
+        return await call_next(request)
+
     app.include_router(setup_hermes_routes())
     return TestClient(app)
 

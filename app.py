@@ -229,26 +229,8 @@ if AUTH_ENABLED:
     # nginx, Caddy, Tailscale Funnel, …). cloudflared connects to the app FROM
     # 127.0.0.1, so without this check every tunneled request would look like
     # loopback and could bypass auth.
-    _PROXY_FWD_HEADERS = (
-        "cf-connecting-ip", "cf-ray", "cf-visitor",
-        "x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded",
-    )
-
-    def _is_trusted_loopback(request: Request) -> bool:
-        """True ONLY for a DIRECT loopback connection with no proxy/tunnel
-        forwarding headers. A bare ``client.host in ('127.0.0.1','::1')`` check is
-        unsafe behind a Cloudflare tunnel / reverse proxy: those connect from
-        loopback, so a remote visitor would otherwise inherit local trust and
-        slip past LOCALHOST_BYPASS or spoof the internal-tool path. Odysseus's own
-        in-process agent loopback calls carry none of these headers, so they still
-        qualify."""
-        host = request.client.host if request.client else None
-        if host not in ("127.0.0.1", "::1"):
-            return False
-        for _h in _PROXY_FWD_HEADERS:
-            if request.headers.get(_h):
-                return False
-        return True
+    from core.middleware import is_trusted_loopback as _is_trusted_loopback
+    from core.middleware import api_token_path_allowed as _api_token_path_allowed
 
     class AuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
@@ -314,6 +296,11 @@ if AUTH_ENABLED:
                             matched_scopes = scopes or []
                             break
                     if matched_id:
+                        if not _api_token_path_allowed(path, matched_scopes):
+                            return JSONResponse(
+                                status_code=403,
+                                content={"error": "API token scope does not allow this endpoint"},
+                            )
                         # Update last_used_at off the hot path. Doing it
                         # inline used to keep the request open across an
                         # extra commit; do it fire-and-forget instead.
@@ -403,24 +390,32 @@ async def serve_generated_image(filename: str, request: Request):
     # SECURITY: filename is the only key, so anyone who knows / guesses a
     # 12-hex content hash could pull another user's image bytes. Require
     # auth and verify ownership via the gallery row (when one exists).
-    try:
-        from src.auth_helpers import get_current_user
-        from core.database import SessionLocal as _SL, GalleryImage as _GI
-        _user = get_current_user(request)
-        if _user:
+    # Use effective_user so bearer API tokens attribute to their owner
+    # instead of the sandboxed "api" pseudo-user.
+    from src.auth_helpers import effective_user, _auth_disabled
+    _user = effective_user(request)
+    if not _user and not _auth_disabled():
+        # Auth is on but no resolved caller — do not serve by hash alone.
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if _user:
+        try:
+            from core.database import SessionLocal as _SL, GalleryImage as _GI
             _db = _SL()
             try:
                 _row = _db.query(_GI).filter(_GI.filename == filename).first()
-                # Generated-but-not-yet-imported images have no row → allow.
-                # Row exists with a different owner → 404 (don't confirm existence).
+                # No gallery row yet (chat-generated, not imported) → allow
+                # authenticated callers. Row with a different owner → 404.
+                # Null-owner legacy shared row → allow any authenticated user.
                 if _row is not None and _row.owner and _row.owner != _user:
                     raise HTTPException(status_code=404, detail="Image not found")
             finally:
                 _db.close()
-    except HTTPException:
-        raise
-    except Exception:
-        pass
+        except HTTPException:
+            raise
+        except Exception:
+            # Fail closed on DB/lookup errors — never serve on broken auth path.
+            logger.warning("serve_generated_image ownership check failed", exc_info=True)
+            raise HTTPException(status_code=404, detail="Image not found")
     ext = filename.rsplit('.', 1)[-1].lower()
     mime = {
         "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
