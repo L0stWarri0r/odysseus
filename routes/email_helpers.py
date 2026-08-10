@@ -323,30 +323,79 @@ def _init_scheduled_db():
             owner TEXT DEFAULT ''
         )
     """)
-    # Email summary cache (keyed by Message-ID)
+    # Email summary cache (keyed by Message-ID + owner). Message-IDs are
+    # global across mailboxes (newsletters), so owner must be part of the key
+    # or user A's AI summary leaks into user B's list/read responses.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_summaries (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             subject TEXT,
             sender TEXT,
             summary TEXT NOT NULL,
             model_used TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
-    # Email AI reply cache (pre-generated draft replies)
+    # Email AI reply cache (pre-generated draft replies) — same owner keying.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_ai_replies (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             reply TEXT NOT NULL,
             model_used TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
+    # Rebuild legacy message_id-only PKs into (message_id, owner) composites.
+    for _tbl, _cols_sql, _copy_sql in (
+        (
+            "email_summaries",
+            """CREATE TABLE IF NOT EXISTS email_summaries__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT, folder TEXT,
+                    subject TEXT, sender TEXT, summary TEXT NOT NULL,
+                    model_used TEXT, created_at TEXT NOT NULL,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_summaries__new
+                  (message_id, owner, uid, folder, subject, sender, summary, model_used, created_at)
+                SELECT message_id, COALESCE(owner, ''), uid, folder, subject, sender,
+                       summary, model_used, created_at FROM email_summaries""",
+        ),
+        (
+            "email_ai_replies",
+            """CREATE TABLE IF NOT EXISTS email_ai_replies__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT, folder TEXT,
+                    reply TEXT NOT NULL, model_used TEXT, created_at TEXT NOT NULL,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_ai_replies__new
+                  (message_id, owner, uid, folder, reply, model_used, created_at)
+                SELECT message_id, COALESCE(owner, ''), uid, folder, reply,
+                       model_used, created_at FROM email_ai_replies""",
+        ),
+    ):
+        try:
+            _info = list(conn.execute(f"PRAGMA table_info({_tbl})"))
+            _col_names = [r[1] for r in _info]
+            _pk_cols = [r[1] for r in sorted(_info, key=lambda r: r[5] or 0) if r[5]]
+            needs_rebuild = ("owner" not in _col_names) or (_pk_cols == ["message_id"])
+            if needs_rebuild:
+                if "owner" not in _col_names:
+                    conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN owner TEXT DEFAULT ''")
+                conn.execute(_cols_sql)
+                conn.execute(_copy_sql)
+                conn.execute(f"DROP TABLE {_tbl}")
+                conn.execute(f"ALTER TABLE {_tbl}__new RENAME TO {_tbl}")
+        except Exception as _mig_e:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(f"{_tbl} owner-migration skipped: {_mig_e}")
     # Email tags / spam classification cache. SECURITY: keyed by
     # (message_id, owner) because Message-IDs are GLOBAL (a newsletter goes
     # to many users with the same Message-ID). Without owner-scoping, a

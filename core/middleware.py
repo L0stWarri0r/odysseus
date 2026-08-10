@@ -16,6 +16,57 @@ from starlette.responses import Response
 INTERNAL_TOOL_TOKEN = os.environ.get("ODYSSEUS_INTERNAL_TOKEN") or secrets.token_hex(32)
 INTERNAL_TOOL_HEADER = "X-Odysseus-Internal-Token"
 
+# Headers that prove a request was forwarded by a proxy/tunnel. A bare
+# client.host loopback check is unsafe behind cloudflared/nginx/Caddy —
+# those connect FROM 127.0.0.1, so a remote visitor would inherit local trust.
+_PROXY_FWD_HEADERS = (
+    "cf-connecting-ip", "cf-ray", "cf-visitor",
+    "x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded",
+)
+
+
+def is_trusted_loopback(request: Request) -> bool:
+    """True ONLY for a DIRECT loopback connection with no proxy forwarding headers."""
+    host = request.client.host if getattr(request, "client", None) else None
+    if host not in ("127.0.0.1", "::1"):
+        return False
+    headers = getattr(request, "headers", None) or {}
+    for h in _PROXY_FWD_HEADERS:
+        if headers.get(h):
+            return False
+    return True
+
+
+# Paths a chat-scoped API bearer token may hit. Default mint scope is "chat";
+# without this allowlist the token authenticated as synthetic user "api" and
+# could reach research/gallery/email/etc. (DEFAULT_PRIVILEGES for unknown user).
+CHAT_SCOPE_EXACT_PATHS = frozenset({
+    "/api/v1/chat",
+    "/api/companion/ping",
+    "/api/companion/info",
+    "/api/companion/models",
+})
+CHAT_SCOPE_PREFIXES = (
+    "/api/generated-image/",
+)
+
+
+def api_token_path_allowed(path: str, scopes) -> bool:
+    """Return True if a bearer API token with ``scopes`` may access ``path``."""
+    scope_set = {str(s).strip() for s in (scopes or []) if str(s).strip()}
+    if not scope_set:
+        scope_set = {"chat"}
+    if "admin" in scope_set or "*" in scope_set:
+        return True
+    allowed = set()
+    if "chat" in scope_set:
+        allowed |= CHAT_SCOPE_EXACT_PATHS
+    if path in allowed:
+        return True
+    if "chat" in scope_set and any(path.startswith(p) for p in CHAT_SCOPE_PREFIXES):
+        return True
+    return False
+
 
 def require_admin(request: Request):
     """Raise 403 if the current user isn't an admin.
@@ -23,15 +74,22 @@ def require_admin(request: Request):
     the in-process internal-tool token used by loopback agent tools.
     """
     # In-process bypass for tool-layer loopback calls. Two paths:
-    # (a) header-direct (caller set X-Odysseus-Internal-Token), or
-    # (b) the auth middleware already validated the token and stamped
-    #     request.state.current_user = "internal-tool".
+    # (a) header-direct (caller set X-Odysseus-Internal-Token) — ONLY from
+    #     trusted loopback, matching AuthMiddleware. Without the loopback
+    #     check a leaked/stolen INTERNAL_TOOL_TOKEN would escalate any remote
+    #     authenticated non-admin to admin via a single header.
+    # (b) the auth middleware already validated the token + loopback and
+    #     stamped request.state.current_user = "internal-tool".
     try:
         hdr = request.headers.get(INTERNAL_TOOL_HEADER)
         if hdr and secrets.compare_digest(hdr, INTERNAL_TOOL_TOKEN):
-            return
+            if is_trusted_loopback(request):
+                return
+            raise HTTPException(403, "Admin only")
         if getattr(request.state, "current_user", None) == "internal-tool":
             return
+    except HTTPException:
+        raise
     except Exception:
         pass
 

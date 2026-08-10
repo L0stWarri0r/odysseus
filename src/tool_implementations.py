@@ -3191,7 +3191,7 @@ async def _cookbook_kill_session(session_id: str, *, remote_host: str = "",
     if remote:
         _pf = f"-p {shlex.quote(str(sport))} " if sport and str(sport) != "22" else ""
         cmd = (
-            f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+            f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "
             f"{_pf}{shlex.quote(remote)} 'tmux kill-session -t {shlex.quote(session_id)}'"
         )
         target_label = f"{session_id} on {remote}"
@@ -3367,7 +3367,7 @@ async def do_adopt_served_model(content: str, owner: Optional[str] = None) -> Di
     # Verify tmux session exists on the target host
     headers = _internal_headers()
     if host:
-        check = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no {shlex.quote(host)} 'tmux has-session -t {shlex.quote(sess)} 2>&1'"
+        check = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new {shlex.quote(host)} 'tmux has-session -t {shlex.quote(sess)} 2>&1'"
     else:
         check = f"tmux has-session -t {shlex.quote(sess)} 2>&1"
     try:

@@ -96,6 +96,9 @@ def require_privilege(request: Request, key: str) -> str:
     (which returns ADMIN_PRIVILEGES wholesale), so this is a no-op for
     them. In unauthenticated single-user mode (`require_user` returns ""),
     privileges aren't enforced.
+
+    Fail-closed: if privilege lookup throws or returns a non-dict, deny.
+    Unknown privilege keys still default to permitted (UI may gate those).
     """
     user = require_user(request)
     if not user:
@@ -106,11 +109,11 @@ def require_privilege(request: Request, key: str) -> str:
     try:
         privs = auth_mgr.get_privileges(user) or {}
     except Exception:
-        return user
+        raise HTTPException(403, f"Your account is not allowed to {key.replace('_', ' ')}.")
     if not isinstance(privs, dict):
-        privs = {}
+        raise HTTPException(403, f"Your account is not allowed to {key.replace('_', ' ')}.")
     # True = permitted; missing key defaults to permitted (unknown privileges
-    # fail open — the UI gates display-side).
+    # are not yet in DEFAULT_PRIVILEGES — the UI gates display-side).
     if not privs.get(key, True):
         raise HTTPException(403, f"Your account is not allowed to {key.replace('_', ' ')}.")
     return user

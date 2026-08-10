@@ -24,7 +24,7 @@ def _run(cmd):
                 cmd_str = " ".join(cmd)
             else:
                 cmd_str = cmd
-            ssh_cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no"]
+            ssh_cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new"]
             if _remote_port and _remote_port != "22":
                 ssh_cmd += ["-p", _remote_port]
             ssh_cmd += [_remote_host, cmd_str]
