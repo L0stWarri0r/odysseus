@@ -970,7 +970,10 @@ def setup_chat_routes(
                     if full_response:
                         logger.info("Client disconnected mid-stream (chat mode) for session %s, saving partial (%d chars)", session, len(full_response))
                         _stopped_content, _stopped_md = clean_thinking_for_save(full_response, {"stopped": True, "model": sess.model})
-                        sess.add_message(ChatMessage("assistant", _stopped_content, metadata=_stopped_md))
+                        sess.add_message(
+                            ChatMessage("assistant", _stopped_content, metadata=_stopped_md),
+                            persist=not incognito,
+                        )
                         if not incognito:
                             session_manager.save_sessions()
                     raise
@@ -1076,7 +1079,10 @@ def setup_chat_routes(
                         if full_response:
                             logger.info("Client disconnected mid-stream for session %s, saving partial response (%d chars)", session, len(full_response))
                             _stopped_content2, _stopped_md2 = clean_thinking_for_save(full_response, {"stopped": True, "model": sess.model})
-                            sess.add_message(ChatMessage("assistant", _stopped_content2, metadata=_stopped_md2))
+                            sess.add_message(
+                                ChatMessage("assistant", _stopped_content2, metadata=_stopped_md2),
+                                persist=not incognito,
+                            )
                             if not incognito:
                                 session_manager.save_sessions()
                     except Exception:

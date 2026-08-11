@@ -815,15 +815,17 @@ async def action_mark_email_boundaries(owner: str, **kwargs) -> Tuple[str, bool]
         if not mails:
             raise TaskNoop("no emails to analyze")
 
-        url, model, headers = resolve_endpoint("utility")
+        url, model, headers = resolve_endpoint("utility", owner=owner)
         if not url or not model:
-            url, model, headers = resolve_endpoint("default")
+            url, model, headers = resolve_endpoint("default", owner=owner)
         if not url or not model:
             return "No LLM endpoint available", False
 
+        _owner_key = owner or ""
         c = _sql3.connect(SCHEDULED_DB)
         already = {r[0] for r in c.execute(
-            "SELECT message_id FROM email_boundaries"
+            "SELECT message_id FROM email_boundaries WHERE owner = ?",
+            (_owner_key,),
         ).fetchall()}
         c.close()
 
@@ -936,9 +938,9 @@ async def action_mark_email_boundaries(owner: str, **kwargs) -> Tuple[str, bool]
                 c = _sql3.connect(SCHEDULED_DB)
                 c.execute(
                     "INSERT OR REPLACE INTO email_boundaries "
-                    "(message_id, uid, folder, sig_start, quote_start, model_used, created_at, turns_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mid, str(uid), "INBOX", sig, quote, model, _dt.utcnow().isoformat(), turns_json),
+                    "(message_id, owner, uid, folder, sig_start, quote_start, model_used, created_at, turns_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mid, _owner_key, str(uid), "INBOX", sig, quote, model, _dt.utcnow().isoformat(), turns_json),
                 )
                 c.commit()
                 c.close()
@@ -1036,11 +1038,15 @@ async def action_learn_sender_signatures(owner: str, **kwargs) -> Tuple[str, boo
             by_sender.setdefault(addr, []).append(m)
 
         # 3. Eligibility: ≥3 emails AND (no cache OR cache > 30 days old).
+        # Owner-scoped: never reuse another tenant's learned sigs.
+        _owner = (owner or "").strip()
         try:
             conn = _sql3.connect(SCHEDULED_DB)
             cached = {
                 r[0]: r[1] for r in conn.execute(
-                    "SELECT from_address, last_built_at FROM sender_signatures"
+                    "SELECT from_address, last_built_at FROM sender_signatures "
+                    "WHERE owner = ?",
+                    (_owner,),
                 ).fetchall()
             }
             conn.close()
@@ -1150,9 +1156,9 @@ async def action_learn_sender_signatures(owner: str, **kwargs) -> Tuple[str, boo
                 conn = _sql3.connect(SCHEDULED_DB)
                 conn.execute(
                     "INSERT OR REPLACE INTO sender_signatures "
-                    "(from_address, signature_text, sample_count, last_built_at, model_used, source) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (addr, cached_sig, len(bodies), _dt.utcnow().isoformat(), model, "llm"),
+                    "(owner, from_address, signature_text, sample_count, last_built_at, model_used, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (_owner, addr, cached_sig, len(bodies), _dt.utcnow().isoformat(), model, "llm"),
                 )
                 conn.commit()
                 conn.close()

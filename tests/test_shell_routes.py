@@ -293,7 +293,7 @@ class TestPackageProbeStatus:
 class TestSshBaseArgv:
     def test_basic_host_no_port(self):
         assert _ssh_base_argv("user@example.com", None) == [
-            "ssh", "-o", "ConnectTimeout=6", "-o", "StrictHostKeyChecking=no",
+            "ssh", "-o", "ConnectTimeout=6", "-o", "StrictHostKeyChecking=accept-new",
             "user@example.com",
         ]
 

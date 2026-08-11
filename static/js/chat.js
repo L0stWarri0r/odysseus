@@ -776,6 +776,28 @@ import createResearchSynapse from './researchSynapse.js';
       if (incognitoChk && incognitoChk.checked) {
         fd.append('incognito', 'true');
       }
+      // Hermes private_mode: keep local-model prompts opaque to Hermes control.
+      // Auto-enable when the active session endpoint is loopback/local.
+      try {
+        const endpointUrl = sessionModule.getCurrentEndpointUrl
+          ? sessionModule.getCurrentEndpointUrl()
+          : '';
+        if (endpointUrl) {
+          const u = new URL(endpointUrl, window.location.origin);
+          const h = (u.hostname || '').toLowerCase().replace(/\.$/, '');
+          if (
+            h === 'localhost'
+            || h === '127.0.0.1'
+            || h === '::1'
+            || h === '0.0.0.0'
+            || h === '127.1'
+            || h.endsWith('.localhost')
+            || h.startsWith('127.')
+          ) {
+            fd.append('private_mode', 'true');
+          }
+        }
+      } catch (_pmErr) { /* ignore malformed endpoint URLs */ }
       if (presetsModule.getSelectedPreset()) {
         fd.append('preset_id', presetsModule.getSelectedPreset());
       }

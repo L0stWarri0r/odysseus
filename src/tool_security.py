@@ -44,6 +44,8 @@ NON_ADMIN_BLOCKED_TOOLS = {
     "stop_served_model",
     "cancel_download",
     "adopt_served_model",
+    # Exposes /proc/*/cmdline of model servers on the host.
+    "list_served_models",
 }
 
 

@@ -45,6 +45,13 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     if isinstance(dbapi_connection, sqlite3.Connection):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        # WAL improves concurrent read/write behaviour for the default
+        # sqlite:///./data/app.db deploy. Fail soft on network/fs that reject WAL.
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            logger.debug("SQLite WAL pragma not applied", exc_info=True)
         cursor.close()
 
 

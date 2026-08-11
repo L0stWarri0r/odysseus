@@ -1315,7 +1315,7 @@ class TaskScheduler:
             db.commit()
             if self._session_manager:
                 try:
-                    self._session_manager.sessions[session_id] = self._session_manager._db_to_session(sess)
+                    self._session_manager.sessions[session_id] = self._session_manager._db_to_session_meta(sess)
                 except Exception:
                     pass
 
@@ -1457,7 +1457,7 @@ class TaskScheduler:
             db.commit()
             if self._session_manager:
                 try:
-                    self._session_manager.sessions[session_id] = self._session_manager._db_to_session(sess)
+                    self._session_manager.sessions[session_id] = self._session_manager._db_to_session_meta(sess)
                 except Exception:
                     pass
 
@@ -1737,7 +1737,7 @@ class TaskScheduler:
             db.commit()
             if self._session_manager:
                 try:
-                    self._session_manager.sessions[session_id] = self._session_manager._db_to_session(sess)
+                    self._session_manager.sessions[session_id] = self._session_manager._db_to_session_meta(sess)
                 except Exception:
                     pass
 

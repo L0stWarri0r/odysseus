@@ -328,7 +328,7 @@ def setup_cookbook_routes() -> APIRouter:
             check = f"command -v {shlex.quote(binary)} >/dev/null 2>&1"
         try:
             proc = await asyncio.create_subprocess_exec(
-                "ssh", "-o", "ConnectTimeout=6", "-o", "StrictHostKeyChecking=no",
+                "ssh", "-o", "ConnectTimeout=6", "-o", "StrictHostKeyChecking=accept-new",
                 *_pf, remote, check,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -1356,7 +1356,7 @@ def setup_cookbook_routes() -> APIRouter:
         """Run nvidia-smi locally or over SSH. Returns (stdout, error_or_None)."""
         if host:
             pf = f"-p {ssh_port} " if ssh_port and ssh_port != "22" else ""
-            cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no {pf}{host} '{query}'"
+            cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new {pf}{host} '{query}'"
             proc = await asyncio.create_subprocess_shell(
                 cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
@@ -1386,7 +1386,7 @@ def setup_cookbook_routes() -> APIRouter:
                 f"elif command -v zsh >/dev/null 2>&1; then zsh -lc {quoted_cmd}; "
                 "else echo 'No POSIX shell found for GPU probe' >&2; exit 127; fi"
             )
-            cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no {pf}{host} {shlex.quote(remote_cmd)}"
+            cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new {pf}{host} {shlex.quote(remote_cmd)}"
             proc = await asyncio.create_subprocess_shell(
                 cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
@@ -1679,7 +1679,7 @@ def setup_cookbook_routes() -> APIRouter:
         try:
             if host:
                 pf = f"-p {req.ssh_port} " if req.ssh_port and req.ssh_port != "22" else ""
-                cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no {pf}{host} '{kill_cmd}'"
+                cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new {pf}{host} '{kill_cmd}'"
                 proc = await asyncio.create_subprocess_shell(
                     cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )

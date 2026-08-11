@@ -11,6 +11,7 @@ This is the single place that handles:
 import json
 import uuid
 import logging
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional
 
@@ -18,6 +19,10 @@ from .database import Session as DbSession, ChatMessage as DbChatMessage, Docume
 from .models import Session, ChatMessage
 
 logger = logging.getLogger(__name__)
+
+# Soft cap for the in-process hot set. Boot loads ≤100 metadata rows; without
+# eviction every subsequent get_session permanently grows RAM.
+_MAX_HOT_SESSIONS = 100
 
 
 def _message_timestamp_iso(value: Optional[datetime]) -> Optional[str]:
@@ -58,7 +63,33 @@ class SessionManager:
     def __init__(self, sessions_file: str = None):
         # sessions_file kept for backward compat, not used
         self.sessions: Dict[str, Session] = {}
+        self._lock = threading.RLock()
+        self._max_hot = _MAX_HOT_SESSIONS
         self.load_sessions()
+
+    def _evict_if_needed(self, keep_id: Optional[str] = None) -> None:
+        """Drop surplus hot-set entries so RAM does not grow without bound.
+
+        Prefers metadata-only (empty history) entries; falls back to arbitrary
+        eviction. DB remains source of truth — get_session rehydrates.
+        Must be called with ``self._lock`` held.
+        """
+        while len(self.sessions) > self._max_hot:
+            victim = None
+            for sid, sess in self.sessions.items():
+                if sid == keep_id:
+                    continue
+                if not getattr(sess, "history", None):
+                    victim = sid
+                    break
+            if victim is None:
+                for sid in self.sessions:
+                    if sid != keep_id:
+                        victim = sid
+                        break
+            if victim is None:
+                break
+            self.sessions.pop(victim, None)
 
     # ------------------------------------------------------------------
     # Loading
@@ -128,7 +159,10 @@ class SessionManager:
         # Try relationship first, then direct query
         if db_session.messages:
             for db_msg in db_session.messages:
-                meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
+                try:
+                    meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
                 if meta is None: meta = {}
                 meta['_db_id'] = db_msg.id
                 meta.setdefault('timestamp', _message_timestamp_iso(db_msg.timestamp))
@@ -143,7 +177,10 @@ class SessionManager:
             ).order_by(DbChatMessage.timestamp).all()
 
             for db_msg in db_messages:
-                meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
+                try:
+                    meta = json.loads(db_msg.meta_data) if db_msg.meta_data else {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
                 if meta is None: meta = {}
                 meta['_db_id'] = db_msg.id
                 meta.setdefault('timestamp', _message_timestamp_iso(db_msg.timestamp))
@@ -350,22 +387,23 @@ class SessionManager:
         Sessions seeded by `load_sessions` start with empty history. The
         first read here hydrates them with the message rows.
         """
-        if session_id not in self.sessions:
-            self._load_session_from_db(session_id)
-        else:
-            cached = self.sessions[session_id]
-            # Lazy hydrate: metadata-only entries get their messages on first read.
-            if not cached.history and getattr(cached, "message_count", 0) > 0:
+        with self._lock:
+            if session_id not in self.sessions:
                 self._load_session_from_db(session_id)
+            else:
+                cached = self.sessions[session_id]
+                # Lazy hydrate: metadata-only entries get their messages on first read.
+                if not cached.history and getattr(cached, "message_count", 0) > 0:
+                    self._load_session_from_db(session_id)
 
-        # Keep model/endpoint metadata fresh. Endpoint deletion can clear the
-        # DB row while a session object is still cached in RAM.
-        self.sync_session_metadata(session_id)
+            # Keep model/endpoint metadata fresh. Endpoint deletion can clear the
+            # DB row while a session object is still cached in RAM.
+            self.sync_session_metadata(session_id)
 
-        # Update last_accessed
-        self._touch_session(session_id)
+            # Update last_accessed
+            self._touch_session(session_id)
 
-        return self.sessions[session_id]
+            return self.sessions[session_id]
 
     def sync_session_metadata(self, session_id: str) -> bool:
         """Refresh non-message session fields from the DB into the cached object."""
@@ -417,6 +455,7 @@ class SessionManager:
                 if meta is None:
                     raise KeyError(f"Session {session_id} could not be loaded")
                 self.sessions[session_id] = meta
+            self._evict_if_needed(keep_id=session_id)
 
         except KeyError:
             raise
@@ -476,7 +515,9 @@ class SessionManager:
                 owner=owner,
             )
 
-            self.sessions[session_id] = session
+            with self._lock:
+                self.sessions[session_id] = session
+                self._evict_if_needed(keep_id=session_id)
             return session
 
         except Exception as e:
@@ -507,7 +548,8 @@ class SessionManager:
             # session lives only here (never persisted, or its row was removed
             # out-of-band); without this it can never be cleared and keeps
             # 404ing on every operation (issue #1044).
-            removed_in_memory = self.sessions.pop(session_id, None) is not None
+            with self._lock:
+                removed_in_memory = self.sessions.pop(session_id, None) is not None
 
             if db_session or removed_in_memory:
                 # Commit the document-detach / message-delete above (a no-op when
@@ -530,8 +572,9 @@ class SessionManager:
 
     def update_session_name(self, session_id: str, name: str):
         """Update session name."""
-        if session_id not in self.sessions:
-            return
+        with self._lock:
+            if session_id not in self.sessions:
+                return
 
         db = SessionLocal()
         try:
@@ -540,7 +583,10 @@ class SessionManager:
                 db_session.name = name
                 db_session.updated_at = datetime.now(timezone.utc)
                 db.commit()
-                self.sessions[session_id].name = name
+                with self._lock:
+                    cached = self.sessions.get(session_id)
+                    if cached is not None:
+                        cached.name = name
         except Exception as e:
             db.rollback()
             logger.error(f"Error updating session name: {e}")
@@ -550,8 +596,9 @@ class SessionManager:
 
     def archive_session(self, session_id: str):
         """Archive a session."""
-        if session_id not in self.sessions:
-            return
+        with self._lock:
+            if session_id not in self.sessions:
+                return
 
         db = SessionLocal()
         try:
@@ -560,7 +607,10 @@ class SessionManager:
                 db_session.archived = True
                 db_session.updated_at = datetime.now(timezone.utc)
                 db.commit()
-                self.sessions[session_id].archived = True
+                with self._lock:
+                    cached = self.sessions.get(session_id)
+                    if cached is not None:
+                        cached.archived = True
         except Exception as e:
             db.rollback()
             logger.error(f"Error archiving session: {e}")
@@ -578,8 +628,9 @@ class SessionManager:
                 db_session.updated_at = datetime.now(timezone.utc)
                 db.commit()
 
-                if session_id in self.sessions:
-                    self.sessions[session_id].is_important = important
+                with self._lock:
+                    if session_id in self.sessions:
+                        self.sessions[session_id].is_important = important
             else:
                 raise KeyError(f"Session {session_id} not found")
         except Exception as e:
@@ -595,12 +646,13 @@ class SessionManager:
 
     def get_sessions_for_user(self, username: Optional[str] = None) -> Dict[str, Session]:
         """Return sessions for a specific user (or all if username is None)."""
-        if username is None:
-            return self.sessions
-        return {
-            sid: s for sid, s in self.sessions.items()
-            if s.owner == username
-        }
+        with self._lock:
+            if username is None:
+                return dict(self.sessions)
+            return {
+                sid: s for sid, s in self.sessions.items()
+                if s.owner == username
+            }
 
     def save_sessions(self):
         """No-op for DB compatibility."""

@@ -195,7 +195,9 @@ def _assert_owns_account(account_id: str, owner: str) -> None:
             row = db.query(_EA).filter(_EA.id == account_id).first()
             if row is None:
                 raise HTTPException(404, "Account not found")
-            if row.owner and row.owner != owner:
+            # Fail closed on null/empty row.owner: legacy unowned accounts
+            # must not be operable by an arbitrary authenticated user.
+            if row.owner != owner:
                 # Treat as 404 (not 403) so we don't leak existence.
                 raise HTTPException(404, "Account not found")
         finally:
@@ -208,6 +210,7 @@ def _assert_owns_account(account_id: str, owner: str) -> None:
         logger.error(f"Account-owner check failed: {e}")
         raise HTTPException(503, "Account check failed")
 
+
 def _q(name: str) -> str:
     """Quote an IMAP mailbox name. Defensive: escapes `\\` and `"` and wraps
     in double quotes so user-supplied folder names with spaces or quotes can't
@@ -216,7 +219,26 @@ def _q(name: str) -> str:
     return '"' + (name or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _attach_compose_uploads(outer: MIMEMultipart, tokens) -> None:
+def _safe_compose_owner(owner: str) -> str:
+    """Filesystem-safe owner segment for compose-upload isolation."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", (owner or "").strip().lower()) or "_anon"
+
+
+def _compose_upload_path(owner: str, token: str) -> Path:
+    """Resolve a staged compose upload under the caller's owner directory.
+
+    Tokens are UUID-based and hard to guess, but without an owner stamp any
+    authenticated user who learns a token can attach/delete another user's
+    file. Owner-scoped paths close that capability leak. Empty owner keeps
+    the legacy flat layout for single-user / AUTH_DISABLED deploys.
+    """
+    safe_token = Path(token).name
+    if not owner:
+        return COMPOSE_UPLOADS_DIR / safe_token
+    return COMPOSE_UPLOADS_DIR / _safe_compose_owner(owner) / safe_token
+
+
+def _attach_compose_uploads(outer: MIMEMultipart, tokens, owner: str = "") -> None:
     """Read each staged upload token, build a MIMEBase part, and attach to
     `outer`. Tokens are sanitized via Path(token).name to prevent traversal.
     Missing files are skipped silently. Used by /send, scheduled delivery,
@@ -224,10 +246,9 @@ def _attach_compose_uploads(outer: MIMEMultipart, tokens) -> None:
     if not tokens:
         return
     for token in tokens:
-        safe_token = Path(token).name
-        path = COMPOSE_UPLOADS_DIR / safe_token
+        path = _compose_upload_path(owner, token)
         if not path.exists():
-            logger.warning(f"Attachment token not found: {safe_token}")
+            logger.warning(f"Attachment token not found: {Path(token).name}")
             continue
         ctype, encoding = mimetypes.guess_type(str(path))
         if ctype is None or encoding is not None:
@@ -238,18 +259,19 @@ def _attach_compose_uploads(outer: MIMEMultipart, tokens) -> None:
             part.set_payload(f.read())
         encoders.encode_base64(part)
         # Token format: "<uuid>_<original_name>"
+        safe_token = Path(token).name
         original_name = safe_token.split("_", 1)[1] if "_" in safe_token else safe_token
         part.add_header("Content-Disposition", "attachment", filename=original_name)
         outer.attach(part)
 
 
-def _cleanup_compose_uploads(tokens) -> None:
+def _cleanup_compose_uploads(tokens, owner: str = "") -> None:
     """Best-effort unlink of staged uploads after delivery (or failure)."""
     if not tokens:
         return
     for token in tokens:
         try:
-            (COMPOSE_UPLOADS_DIR / Path(token).name).unlink(missing_ok=True)
+            _compose_upload_path(owner, token).unlink(missing_ok=True)
         except Exception:
             pass
 
@@ -301,30 +323,79 @@ def _init_scheduled_db():
             owner TEXT DEFAULT ''
         )
     """)
-    # Email summary cache (keyed by Message-ID)
+    # Email summary cache (keyed by Message-ID + owner). Message-IDs are
+    # global across mailboxes (newsletters), so owner must be part of the key
+    # or user A's AI summary leaks into user B's list/read responses.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_summaries (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             subject TEXT,
             sender TEXT,
             summary TEXT NOT NULL,
             model_used TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
-    # Email AI reply cache (pre-generated draft replies)
+    # Email AI reply cache (pre-generated draft replies) — same owner keying.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_ai_replies (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             reply TEXT NOT NULL,
             model_used TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
+    # Rebuild legacy message_id-only PKs into (message_id, owner) composites.
+    for _tbl, _cols_sql, _copy_sql in (
+        (
+            "email_summaries",
+            """CREATE TABLE IF NOT EXISTS email_summaries__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT, folder TEXT,
+                    subject TEXT, sender TEXT, summary TEXT NOT NULL,
+                    model_used TEXT, created_at TEXT NOT NULL,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_summaries__new
+                  (message_id, owner, uid, folder, subject, sender, summary, model_used, created_at)
+                SELECT message_id, COALESCE(owner, ''), uid, folder, subject, sender,
+                       summary, model_used, created_at FROM email_summaries""",
+        ),
+        (
+            "email_ai_replies",
+            """CREATE TABLE IF NOT EXISTS email_ai_replies__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT, folder TEXT,
+                    reply TEXT NOT NULL, model_used TEXT, created_at TEXT NOT NULL,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_ai_replies__new
+                  (message_id, owner, uid, folder, reply, model_used, created_at)
+                SELECT message_id, COALESCE(owner, ''), uid, folder, reply,
+                       model_used, created_at FROM email_ai_replies""",
+        ),
+    ):
+        try:
+            _info = list(conn.execute(f"PRAGMA table_info({_tbl})"))
+            _col_names = [r[1] for r in _info]
+            _pk_cols = [r[1] for r in sorted(_info, key=lambda r: r[5] or 0) if r[5]]
+            needs_rebuild = ("owner" not in _col_names) or (_pk_cols == ["message_id"])
+            if needs_rebuild:
+                if "owner" not in _col_names:
+                    conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN owner TEXT DEFAULT ''")
+                conn.execute(_cols_sql)
+                conn.execute(_copy_sql)
+                conn.execute(f"DROP TABLE {_tbl}")
+                conn.execute(f"ALTER TABLE {_tbl}__new RENAME TO {_tbl}")
+        except Exception as _mig_e:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(f"{_tbl} owner-migration skipped: {_mig_e}")
     # Email tags / spam classification cache. SECURITY: keyed by
     # (message_id, owner) because Message-IDs are GLOBAL (a newsletter goes
     # to many users with the same Message-ID). Without owner-scoping, a
@@ -384,17 +455,23 @@ def _init_scheduled_db():
         # Best-effort — log via the module logger if available
         import logging as _lg
         _lg.getLogger(__name__).warning(f"email_tags owner-migration skipped: {_mig_e}")
+    # Calendar / urgency / boundary caches — same (message_id, owner) keying as
+    # summaries/replies. Message-IDs are global (newsletters), so a bare
+    # message_id PK lets user A's extraction/boundaries bleed into user B.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_calendar_extractions (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             events_created INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_urgency_alerts (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             subject TEXT,
@@ -402,7 +479,8 @@ def _init_scheduled_db():
             urgency TEXT,
             reason TEXT,
             alerted INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
     conn.execute("""
@@ -420,15 +498,77 @@ def _init_scheduled_db():
     # client uses these to fold without ever re-calling the LLM.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_boundaries (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             sig_start INTEGER,
             quote_start INTEGER,
             model_used TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            turns_json TEXT,
+            PRIMARY KEY (message_id, owner)
         )
     """)
+    # Rebuild legacy message_id-only PKs for calendar/urgency/boundaries.
+    for _tbl, _cols_sql, _copy_sql in (
+        (
+            "email_calendar_extractions",
+            """CREATE TABLE IF NOT EXISTS email_calendar_extractions__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT,
+                    events_created INTEGER DEFAULT 0, created_at TEXT NOT NULL,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_calendar_extractions__new
+                  (message_id, owner, uid, events_created, created_at)
+                SELECT message_id, COALESCE(owner, ''), uid, events_created, created_at
+                FROM email_calendar_extractions""",
+        ),
+        (
+            "email_urgency_alerts",
+            """CREATE TABLE IF NOT EXISTS email_urgency_alerts__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT, folder TEXT,
+                    subject TEXT, sender TEXT, urgency TEXT, reason TEXT,
+                    alerted INTEGER DEFAULT 0, created_at TEXT NOT NULL,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_urgency_alerts__new
+                  (message_id, owner, uid, folder, subject, sender, urgency, reason, alerted, created_at)
+                SELECT message_id, COALESCE(owner, ''), uid, folder, subject, sender,
+                       urgency, reason, alerted, created_at FROM email_urgency_alerts""",
+        ),
+        (
+            "email_boundaries",
+            """CREATE TABLE IF NOT EXISTS email_boundaries__new (
+                    message_id TEXT, owner TEXT DEFAULT '', uid TEXT, folder TEXT,
+                    sig_start INTEGER, quote_start INTEGER, model_used TEXT,
+                    created_at TEXT NOT NULL, turns_json TEXT,
+                    PRIMARY KEY (message_id, owner)
+                )""",
+            """INSERT OR IGNORE INTO email_boundaries__new
+                  (message_id, owner, uid, folder, sig_start, quote_start, model_used, created_at, turns_json)
+                SELECT message_id, COALESCE(owner, ''), uid, folder, sig_start, quote_start,
+                       model_used, created_at, turns_json FROM email_boundaries""",
+        ),
+    ):
+        try:
+            _info = list(conn.execute(f"PRAGMA table_info({_tbl})"))
+            _col_names = [r[1] for r in _info]
+            _pk_cols = [r[1] for r in sorted(_info, key=lambda r: r[5] or 0) if r[5]]
+            needs_rebuild = ("owner" not in _col_names) or (_pk_cols == ["message_id"])
+            if needs_rebuild:
+                if "owner" not in _col_names:
+                    conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN owner TEXT DEFAULT ''")
+                # turns_json may be missing on very old boundary tables.
+                if _tbl == "email_boundaries" and "turns_json" not in _col_names:
+                    conn.execute("ALTER TABLE email_boundaries ADD COLUMN turns_json TEXT")
+                conn.execute(_cols_sql)
+                conn.execute(_copy_sql)
+                conn.execute(f"DROP TABLE {_tbl}")
+                conn.execute(f"ALTER TABLE {_tbl}__new RENAME TO {_tbl}")
+        except Exception as _mig_e:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(f"{_tbl} owner-migration skipped: {_mig_e}")
     # Lazy migration: add account_id column to scheduled_emails if missing
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(scheduled_emails)").fetchall()]
@@ -479,16 +619,54 @@ def _init_scheduled_db():
     # action: the LLM extracts the common trailing block across N emails
     # from each sender; the renderer folds it consistently for every
     # future email from that address.
+    #
+    # SECURITY: keyed by (owner, from_address). A shared Message-From address
+    # across tenants must not leak one user's learned signature text into
+    # another user's email renderer.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sender_signatures (
-            from_address TEXT PRIMARY KEY,
+            owner TEXT DEFAULT '',
+            from_address TEXT,
             signature_text TEXT,
             sample_count INTEGER,
             last_built_at TEXT NOT NULL,
             model_used TEXT,
-            source TEXT
+            source TEXT,
+            PRIMARY KEY (owner, from_address)
         )
     """)
+    # Rebuild legacy from_address-only PK into (owner, from_address).
+    try:
+        _info = list(conn.execute("PRAGMA table_info(sender_signatures)"))
+        _col_names = [r[1] for r in _info]
+        _pk_cols = [r[1] for r in sorted(_info, key=lambda r: r[5] or 0) if r[5]]
+        needs_rebuild = ("owner" not in _col_names) or (_pk_cols == ["from_address"])
+        if needs_rebuild:
+            if "owner" not in _col_names:
+                conn.execute("ALTER TABLE sender_signatures ADD COLUMN owner TEXT DEFAULT ''")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sender_signatures__new (
+                    owner TEXT DEFAULT '',
+                    from_address TEXT,
+                    signature_text TEXT,
+                    sample_count INTEGER,
+                    last_built_at TEXT NOT NULL,
+                    model_used TEXT,
+                    source TEXT,
+                    PRIMARY KEY (owner, from_address)
+                )
+            """)
+            conn.execute("""
+                INSERT OR IGNORE INTO sender_signatures__new
+                  (owner, from_address, signature_text, sample_count, last_built_at, model_used, source)
+                SELECT COALESCE(owner, ''), from_address, signature_text, sample_count,
+                       last_built_at, model_used, source FROM sender_signatures
+            """)
+            conn.execute("DROP TABLE sender_signatures")
+            conn.execute("ALTER TABLE sender_signatures__new RENAME TO sender_signatures")
+    except Exception as _mig_e:
+        import logging as _lg
+        _lg.getLogger(__name__).warning(f"sender_signatures owner-migration skipped: {_mig_e}")
     conn.commit()
     conn.close()
 
