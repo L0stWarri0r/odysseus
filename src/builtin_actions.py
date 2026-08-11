@@ -1038,11 +1038,15 @@ async def action_learn_sender_signatures(owner: str, **kwargs) -> Tuple[str, boo
             by_sender.setdefault(addr, []).append(m)
 
         # 3. Eligibility: ≥3 emails AND (no cache OR cache > 30 days old).
+        # Owner-scoped: never reuse another tenant's learned sigs.
+        _owner = (owner or "").strip()
         try:
             conn = _sql3.connect(SCHEDULED_DB)
             cached = {
                 r[0]: r[1] for r in conn.execute(
-                    "SELECT from_address, last_built_at FROM sender_signatures"
+                    "SELECT from_address, last_built_at FROM sender_signatures "
+                    "WHERE owner = ?",
+                    (_owner,),
                 ).fetchall()
             }
             conn.close()
@@ -1152,9 +1156,9 @@ async def action_learn_sender_signatures(owner: str, **kwargs) -> Tuple[str, boo
                 conn = _sql3.connect(SCHEDULED_DB)
                 conn.execute(
                     "INSERT OR REPLACE INTO sender_signatures "
-                    "(from_address, signature_text, sample_count, last_built_at, model_used, source) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (addr, cached_sig, len(bodies), _dt.utcnow().isoformat(), model, "llm"),
+                    "(owner, from_address, signature_text, sample_count, last_built_at, model_used, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (_owner, addr, cached_sig, len(bodies), _dt.utcnow().isoformat(), model, "llm"),
                 )
                 conn.commit()
                 conn.close()

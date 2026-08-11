@@ -460,15 +460,28 @@ def setup_task_routes(task_scheduler) -> APIRouter:
 
         cleared = {}
         conn = sqlite3.connect(SCHEDULED_DB)
+        # Owner-keyed email caches must never wipe another tenant's rows.
+        _owner_keyed = {
+            "email_tags",
+            "email_summaries",
+            "email_ai_replies",
+            "email_calendar_extractions",
+            "email_boundaries",
+            "email_urgency_alerts",
+            "sender_signatures",
+        }
         try:
             for table in tables:
                 try:
-                    if table == "email_tags" and user:
+                    if table in _owner_keyed and user:
                         before = conn.execute(
-                            "SELECT COUNT(*) FROM email_tags WHERE owner = ? OR owner = ''",
+                            f"SELECT COUNT(*) FROM {table} WHERE owner = ? OR owner = ''",
                             (user,),
                         ).fetchone()[0]
-                        conn.execute("DELETE FROM email_tags WHERE owner = ? OR owner = ''", (user,))
+                        conn.execute(
+                            f"DELETE FROM {table} WHERE owner = ? OR owner = ''",
+                            (user,),
+                        )
                     else:
                         before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                         conn.execute(f"DELETE FROM {table}")

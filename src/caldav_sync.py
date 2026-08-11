@@ -27,6 +27,7 @@ import hashlib
 import ipaddress
 import logging
 import os
+import threading
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse, urlunparse
@@ -117,6 +118,106 @@ def validate_caldav_url(raw_url: str) -> str:
     return urlunparse(parsed._replace(fragment="")).rstrip("/")
 
 
+def _pick_caldav_connect_ip(host: str) -> str:
+    """Resolve ``host`` at connect time and return one allowed IP string.
+
+    Re-checks private/link-local policy so a DNS rebinding race between
+    validate_caldav_url() and the caldav client's own getaddrinfo cannot
+    redirect the TCP peer at a private address.
+    """
+    import socket
+
+    host = (host or "").strip().lower()
+    if not host:
+        raise ValueError("CalDAV URL must include a host")
+    try:
+        literal = ipaddress.ip_address(host.strip("[]"))
+        _validate_caldav_ip(str(literal))
+        return str(literal)
+    except ValueError as exc:
+        # Literal private/blocked IP — re-raise. Non-IP hostnames fall through.
+        if "not allowed" in str(exc) or "Private CalDAV" in str(exc):
+            raise
+    # Hostname path: resolve now and reject any private/link-local record.
+    _validate_caldav_hostname_dns(host)
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception as exc:
+        raise ValueError(f"CalDAV URL host could not be resolved: {exc}") from exc
+    addrs = []
+    for info in infos:
+        try:
+            addrs.append(ipaddress.ip_address(info[4][0]))
+        except ValueError:
+            continue
+    if not addrs:
+        raise ValueError("CalDAV URL host could not be resolved")
+    v4 = [a for a in addrs if isinstance(a, ipaddress.IPv4Address)]
+    return str(v4[0] if v4 else addrs[0])
+
+
+# Serialize DNS pin patches — socket.getaddrinfo is process-global.
+_caldav_dns_pin_lock = threading.Lock()
+
+
+class _PinnedCalDAVDNS:
+    """Context manager: force ``hostname`` to resolve to ``connect_ip``.
+
+    The caldav library re-resolves calendar hostnames on every request. Pinning
+    getaddrinfo for the duration of a sync/writeback closes the rebinding
+    window without rewriting stable calendar URLs (which would break local ids).
+    """
+
+    def __init__(self, hostname: str, connect_ip: str):
+        self.hostname = (hostname or "").lower().strip("[]")
+        self.connect_ip = connect_ip
+        self._real = None
+
+    def __enter__(self):
+        import socket
+
+        _caldav_dns_pin_lock.acquire()
+        self._real = socket.getaddrinfo
+        hostname = self.hostname
+        connect_ip = self.connect_ip
+        real = self._real
+
+        def _pinned(host, *args, **kwargs):
+            h = (host or "").strip("[]").lower().rstrip(".")
+            if h == hostname or h == connect_ip or h == hostname.rstrip("."):
+                return real(connect_ip, *args, **kwargs)
+            return real(host, *args, **kwargs)
+
+        socket.getaddrinfo = _pinned
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        import socket
+
+        if self._real is not None:
+            socket.getaddrinfo = self._real
+            self._real = None
+        _caldav_dns_pin_lock.release()
+        return False
+
+
+def _make_caldav_client(url: str, username: str, password: str):
+    """Validate URL, pick a connect-time IP, and build a caldav.DAVClient.
+
+    Returns ``(client, dns_pin_context)``. Callers must enter the context for
+    the duration of network I/O so every caldav request resolves through the
+    pinned public/allowed IP.
+    """
+    import caldav
+
+    url = validate_caldav_url(url)
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    connect_ip = _pick_caldav_connect_ip(hostname)
+    client = caldav.DAVClient(url=url, username=username, password=password)
+    return client, _PinnedCalDAVDNS(hostname, connect_ip)
+
+
 def _stable_cal_id(remote_url: str) -> str:
     """Deterministic local id for a remote CalDAV calendar — same URL
     always maps to the same local row across restarts and re-syncs."""
@@ -141,13 +242,22 @@ def _sync_blocking(owner: str, url: str, username: str, password: str) -> dict:
     Returns counts: {calendars, events, deleted, errors}."""
     # Lazy imports so a missing `caldav` dep doesn't break app startup —
     # the integrations form still works, sync just no-ops with an error.
-    import caldav
     from caldav.lib.error import AuthorizationError, NotFoundError
-    from core.database import CalendarCal, CalendarEvent, SessionLocal
 
     result = {"calendars": 0, "events": 0, "deleted": 0, "errors": []}
 
-    client = caldav.DAVClient(url=url, username=username, password=password)
+    # Pin TCP peer at connect time for the whole sync (caldav re-resolves
+    # hostnames on follow-up PROPFIND/REPORT requests).
+    client, dns_pin = _make_caldav_client(url, username, password)
+
+    with dns_pin:
+        return _sync_blocking_with_client(
+            owner, url, client, result, AuthorizationError, NotFoundError
+        )
+
+
+def _sync_blocking_with_client(owner, url, client, result, AuthorizationError, NotFoundError):
+    from core.database import CalendarCal, CalendarEvent, SessionLocal
 
     # Discovery: try principal → calendars first; if the server doesn't
     # support discovery (or the URL points directly at a calendar), fall

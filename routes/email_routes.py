@@ -1244,8 +1244,9 @@ def setup_email_routes():
                 try:
                     if sender_addr:
                         _rs = _c.execute(
-                            "SELECT signature_text FROM sender_signatures WHERE from_address = ?",
-                            (sender_addr.lower().strip(),),
+                            "SELECT signature_text FROM sender_signatures "
+                            "WHERE from_address = ? AND owner = ?",
+                            (sender_addr.lower().strip(), owner or ""),
                         ).fetchone()
                         if _rs and _rs[0]:
                             cached_sender_sig = _rs[0]

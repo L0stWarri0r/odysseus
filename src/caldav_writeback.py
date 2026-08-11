@@ -137,12 +137,13 @@ def _discover_calendars(client):
 
 
 def _writeback_blocking(local_cal_id, ev, delete, url, username, password) -> dict:
-    import caldav
-    client = caldav.DAVClient(url=url, username=username, password=password)
-    calendars = _discover_calendars(client)
-    if not calendars:
-        return {"ok": False, "error": "no remote calendars discovered"}
-    return push_event(calendars, local_cal_id, ev, delete=delete)
+    from src.caldav_sync import _make_caldav_client
+    client, dns_pin = _make_caldav_client(url, username, password)
+    with dns_pin:
+        calendars = _discover_calendars(client)
+        if not calendars:
+            return {"ok": False, "error": "no remote calendars discovered"}
+        return push_event(calendars, local_cal_id, ev, delete=delete)
 
 
 async def writeback_event(owner: str, calendar_source: str, calendar_id: str,

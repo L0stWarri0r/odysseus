@@ -619,16 +619,54 @@ def _init_scheduled_db():
     # action: the LLM extracts the common trailing block across N emails
     # from each sender; the renderer folds it consistently for every
     # future email from that address.
+    #
+    # SECURITY: keyed by (owner, from_address). A shared Message-From address
+    # across tenants must not leak one user's learned signature text into
+    # another user's email renderer.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sender_signatures (
-            from_address TEXT PRIMARY KEY,
+            owner TEXT DEFAULT '',
+            from_address TEXT,
             signature_text TEXT,
             sample_count INTEGER,
             last_built_at TEXT NOT NULL,
             model_used TEXT,
-            source TEXT
+            source TEXT,
+            PRIMARY KEY (owner, from_address)
         )
     """)
+    # Rebuild legacy from_address-only PK into (owner, from_address).
+    try:
+        _info = list(conn.execute("PRAGMA table_info(sender_signatures)"))
+        _col_names = [r[1] for r in _info]
+        _pk_cols = [r[1] for r in sorted(_info, key=lambda r: r[5] or 0) if r[5]]
+        needs_rebuild = ("owner" not in _col_names) or (_pk_cols == ["from_address"])
+        if needs_rebuild:
+            if "owner" not in _col_names:
+                conn.execute("ALTER TABLE sender_signatures ADD COLUMN owner TEXT DEFAULT ''")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sender_signatures__new (
+                    owner TEXT DEFAULT '',
+                    from_address TEXT,
+                    signature_text TEXT,
+                    sample_count INTEGER,
+                    last_built_at TEXT NOT NULL,
+                    model_used TEXT,
+                    source TEXT,
+                    PRIMARY KEY (owner, from_address)
+                )
+            """)
+            conn.execute("""
+                INSERT OR IGNORE INTO sender_signatures__new
+                  (owner, from_address, signature_text, sample_count, last_built_at, model_used, source)
+                SELECT COALESCE(owner, ''), from_address, signature_text, sample_count,
+                       last_built_at, model_used, source FROM sender_signatures
+            """)
+            conn.execute("DROP TABLE sender_signatures")
+            conn.execute("ALTER TABLE sender_signatures__new RENAME TO sender_signatures")
+    except Exception as _mig_e:
+        import logging as _lg
+        _lg.getLogger(__name__).warning(f"sender_signatures owner-migration skipped: {_mig_e}")
     conn.commit()
     conn.close()
 

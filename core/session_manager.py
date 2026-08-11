@@ -515,8 +515,9 @@ class SessionManager:
                 owner=owner,
             )
 
-            self.sessions[session_id] = session
-            self._evict_if_needed(keep_id=session_id)
+            with self._lock:
+                self.sessions[session_id] = session
+                self._evict_if_needed(keep_id=session_id)
             return session
 
         except Exception as e:
@@ -547,7 +548,8 @@ class SessionManager:
             # session lives only here (never persisted, or its row was removed
             # out-of-band); without this it can never be cleared and keeps
             # 404ing on every operation (issue #1044).
-            removed_in_memory = self.sessions.pop(session_id, None) is not None
+            with self._lock:
+                removed_in_memory = self.sessions.pop(session_id, None) is not None
 
             if db_session or removed_in_memory:
                 # Commit the document-detach / message-delete above (a no-op when
@@ -570,8 +572,9 @@ class SessionManager:
 
     def update_session_name(self, session_id: str, name: str):
         """Update session name."""
-        if session_id not in self.sessions:
-            return
+        with self._lock:
+            if session_id not in self.sessions:
+                return
 
         db = SessionLocal()
         try:
@@ -580,7 +583,10 @@ class SessionManager:
                 db_session.name = name
                 db_session.updated_at = datetime.now(timezone.utc)
                 db.commit()
-                self.sessions[session_id].name = name
+                with self._lock:
+                    cached = self.sessions.get(session_id)
+                    if cached is not None:
+                        cached.name = name
         except Exception as e:
             db.rollback()
             logger.error(f"Error updating session name: {e}")
@@ -590,8 +596,9 @@ class SessionManager:
 
     def archive_session(self, session_id: str):
         """Archive a session."""
-        if session_id not in self.sessions:
-            return
+        with self._lock:
+            if session_id not in self.sessions:
+                return
 
         db = SessionLocal()
         try:
@@ -600,7 +607,10 @@ class SessionManager:
                 db_session.archived = True
                 db_session.updated_at = datetime.now(timezone.utc)
                 db.commit()
-                self.sessions[session_id].archived = True
+                with self._lock:
+                    cached = self.sessions.get(session_id)
+                    if cached is not None:
+                        cached.archived = True
         except Exception as e:
             db.rollback()
             logger.error(f"Error archiving session: {e}")
@@ -618,8 +628,9 @@ class SessionManager:
                 db_session.updated_at = datetime.now(timezone.utc)
                 db.commit()
 
-                if session_id in self.sessions:
-                    self.sessions[session_id].is_important = important
+                with self._lock:
+                    if session_id in self.sessions:
+                        self.sessions[session_id].is_important = important
             else:
                 raise KeyError(f"Session {session_id} not found")
         except Exception as e:
@@ -635,12 +646,13 @@ class SessionManager:
 
     def get_sessions_for_user(self, username: Optional[str] = None) -> Dict[str, Session]:
         """Return sessions for a specific user (or all if username is None)."""
-        if username is None:
-            return self.sessions
-        return {
-            sid: s for sid, s in self.sessions.items()
-            if s.owner == username
-        }
+        with self._lock:
+            if username is None:
+                return dict(self.sessions)
+            return {
+                sid: s for sid, s in self.sessions.items()
+                if s.owner == username
+            }
 
     def save_sessions(self):
         """No-op for DB compatibility."""
