@@ -126,11 +126,21 @@ def setup_mcp_routes(mcp_manager: McpManager):
             try:
                 oauth_data = json.loads(oauth_file)
                 oauth_dir = os.path.expanduser(oauth_data.get("dir", ""))
-                oauth_filename = oauth_data.get("filename", "")
+                oauth_filename = os.path.basename(oauth_data.get("filename", "") or "")
                 client_id = oauth_data.get("client_id", "")
                 client_secret = oauth_data.get("client_secret", "")
                 if oauth_dir and oauth_filename and client_id and client_secret:
-                    os.makedirs(oauth_dir, exist_ok=True)
+                    # Constrain writes to a data/ subdirectory — previously
+                    # oauth_dir/filename were attacker-controlled (admin CSRF
+                    # or compromised admin → arbitrary filesystem write).
+                    data_root = os.path.realpath(
+                        os.path.join(os.path.dirname(__file__), "..", "data", "mcp_oauth")
+                    )
+                    os.makedirs(data_root, exist_ok=True)
+                    target_dir = os.path.realpath(os.path.join(data_root, os.path.basename(oauth_dir.rstrip("/"))))
+                    if not (target_dir == data_root or target_dir.startswith(data_root + os.sep)):
+                        raise HTTPException(400, "OAuth credential directory is not allowed")
+                    os.makedirs(target_dir, exist_ok=True)
                     creds = {
                         "installed": {
                             "client_id": client_id,
@@ -140,12 +150,14 @@ def setup_mcp_routes(mcp_manager: McpManager):
                             "token_uri": "https://accounts.google.com/o/oauth2/token",
                         }
                     }
-                    filepath = os.path.join(oauth_dir, oauth_filename)
+                    filepath = os.path.join(target_dir, oauth_filename)
                     with open(filepath, "w", encoding="utf-8") as f:
                         json.dump(creds, f, indent=2)
                     logger.info(f"Wrote OAuth credentials to {filepath}")
                     parsed_env.pop("GOOGLE_CLIENT_ID", None)
                     parsed_env.pop("GOOGLE_CLIENT_SECRET", None)
+            except HTTPException:
+                raise
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"Failed to write OAuth file: {e}")
 

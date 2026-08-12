@@ -1969,7 +1969,7 @@ import createResearchSynapse from './researchSynapse.js';
                   chatBox.appendChild(threadWrap);
                 }
                 threadWrap.classList.add('streaming');
-                const toolLabel = _toolLabels[json.tool.toLowerCase()] || json.tool;
+                const toolLabel = esc(_toolLabels[json.tool.toLowerCase()] || json.tool);
                 const node = document.createElement('div')
                 node.className = 'agent-thread-node running';
                 const cmdHtml = cmd ? `<pre class="agent-thread-cmd">${esc(cmd)}</pre>` : '';

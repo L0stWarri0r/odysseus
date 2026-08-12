@@ -745,7 +745,20 @@ def setup_contacts_routes():
     @router.put("/config")
     async def update_config(data: dict, _admin: str = Depends(require_admin)):
         settings = _load_settings()
-        for key in ("carddav_url", "carddav_username", "carddav_password"):
+        if "carddav_url" in data:
+            raw_url = (data.get("carddav_url") or "").strip()
+            if raw_url:
+                # Reuse CalDAV URL hardening so admin-configured CardDAV
+                # cannot be pointed at loopback/link-local/metadata SSRF
+                # targets (parity with calendar CalDAV config).
+                from src.caldav_sync import validate_caldav_url
+                try:
+                    settings["carddav_url"] = validate_caldav_url(raw_url)
+                except ValueError as e:
+                    raise HTTPException(400, str(e))
+            else:
+                settings["carddav_url"] = ""
+        for key in ("carddav_username", "carddav_password"):
             if key in data:
                 settings[key] = data[key]
         _save_settings(settings)
