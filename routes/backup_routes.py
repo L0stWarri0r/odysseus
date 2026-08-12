@@ -89,8 +89,10 @@ def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRo
                     continue
                 if mem["text"].strip().lower() in existing_texts:
                     continue  # skip duplicates
-                # Assign owner when auth is enabled
-                if user and not mem.get("owner"):
+                # Always stamp the importing user — never trust payload owner
+                # (crafted backups could otherwise plant memories under another
+                # user's namespace).
+                if user:
                     mem["owner"] = user
                 existing.append(mem)
                 existing_texts.add(mem["text"].strip().lower())
@@ -112,7 +114,8 @@ def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRo
                     continue
                 if skill["title"].strip().lower() in existing_titles:
                     continue
-                if user and not skill.get("owner"):
+                # Always stamp the importing user — ignore payload owner.
+                if user:
                     skill["owner"] = user
                 existing.append(skill)
                 existing_ids.add(skill.get("id"))

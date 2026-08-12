@@ -537,12 +537,15 @@ async def do_send_to_session(content: str, session_id: Optional[str] = None, own
     target_sid = lines[0].strip()
     message = lines[1].strip()
 
-    sess = _session_manager.get_session(target_sid)
-    if not sess:
+    try:
+        sess = _session_manager.get_session(target_sid)
+    except KeyError:
         return {"error": f"Session '{target_sid}' not found"}
 
-    # Owner-scope: reject access to another user's session
-    if owner and getattr(sess, "owner", None) and sess.owner != owner:
+    # Owner-scope: reject access to another user's session (and to
+    # null/empty-owner sessions when the caller is authenticated — same
+    # fail-closed pattern as document/memory routes).
+    if owner is not None and owner != "" and getattr(sess, "owner", None) != owner:
         return {"error": f"Session '{target_sid}' not found"}
 
     if not message:
