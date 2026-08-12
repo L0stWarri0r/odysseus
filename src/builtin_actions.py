@@ -299,6 +299,20 @@ async def _run_subprocess(argv, *, shell: bool = False, timeout: int = 120, labe
         return str(e), False
 
 
+def _ssh_remote_argv(host: str, remote_cmd: str) -> list:
+    """Build a hardened ssh argv (reject option-like hosts; pin host keys)."""
+    target = (host or "").strip()
+    if not target or target.lstrip().startswith("-"):
+        raise ValueError("invalid ssh host")
+    return [
+        "ssh",
+        "-o", "ConnectTimeout=10",
+        "-o", "StrictHostKeyChecking=accept-new",
+        target,
+        remote_cmd,
+    ]
+
+
 async def action_ssh_command(owner: str, command: str = "", host: str = "localhost", **kwargs) -> Tuple[str, bool]:
     """Run a shell command locally or on a remote host via SSH."""
     if not command:
@@ -310,9 +324,11 @@ async def action_ssh_command(owner: str, command: str = "", host: str = "localho
                 return await _run_subprocess([bash, "-c", command], timeout=120, label="Command")
             return await _run_subprocess(command, shell=True, timeout=120, label="Command")
         return await _run_subprocess(["bash", "-c", command], timeout=120, label="Command")
-    return await _run_subprocess(
-        ["ssh", "-o", "ConnectTimeout=10", host, command], timeout=120, label="Command",
-    )
+    try:
+        argv = _ssh_remote_argv(host, command)
+    except ValueError as e:
+        return str(e), False
+    return await _run_subprocess(argv, timeout=120, label="Command")
 
 
 async def action_run_script(owner: str, script: str = "", host: str = "", **kwargs) -> Tuple[str, bool]:
@@ -324,7 +340,11 @@ async def action_run_script(owner: str, script: str = "", host: str = "", **kwar
         if IS_WINDOWS and find_bash():
             return await _run_subprocess([find_bash(), "-c", script], timeout=300, label="Script")
         return await _run_subprocess(script, shell=True, timeout=300, label="Script")
-    return await _run_subprocess(["ssh", target_host, script], timeout=300, label="Script")
+    try:
+        argv = _ssh_remote_argv(target_host, script)
+    except ValueError as e:
+        return str(e), False
+    return await _run_subprocess(argv, timeout=300, label="Script")
 
 
 async def action_run_local(owner: str, script: str = "", **kwargs) -> Tuple[str, bool]:

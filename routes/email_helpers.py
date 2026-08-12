@@ -195,7 +195,9 @@ def _assert_owns_account(account_id: str, owner: str) -> None:
             row = db.query(_EA).filter(_EA.id == account_id).first()
             if row is None:
                 raise HTTPException(404, "Account not found")
-            if row.owner and row.owner != owner:
+            # Fail closed on null/empty owner when caller is authenticated —
+            # otherwise any user can operate accounts with unset ownership.
+            if row.owner != owner:
                 # Treat as 404 (not 403) so we don't leak existence.
                 raise HTTPException(404, "Account not found")
         finally:
@@ -549,7 +551,9 @@ def _get_email_config(account_id: str | None = None, owner: str = "") -> dict:
                 # in depth — `require_owner` already calls `_assert_owns_account`
                 # for query-param account_ids, but other callers (cookbook
                 # rules, scheduled poller) may not.
-                if row is not None and owner and row.owner and row.owner != owner:
+                # Fail closed: authenticated callers must match owner exactly
+                # (null/empty-owner rows are not shared across tenants).
+                if row is not None and owner and row.owner != owner:
                     row = None
             # Fallback path — restrict to this owner's accounts so we don't
             # leak another user's default mailbox to an unconfigured user.

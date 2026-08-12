@@ -340,7 +340,7 @@ async function streamToPane(paneIdx, sessionId, message, aiMsgEl, opts) {
             } else {
               // Agent thread node — matches main chat style
               const _toolLabels = { bash: 'Terminal', python: 'Python', web_search: 'Web Search', read_file: 'Read File', write_file: 'Write File' };
-              const toolLabel = _toolLabels[toolName.toLowerCase()] || toolName;
+              const toolLabel = escapeHtml(_toolLabels[toolName.toLowerCase()] || toolName);
               const cmdHtml = cmd ? `<pre class="agent-thread-cmd">${escapeHtml(cmd)}</pre>` : '';
               const node = document.createElement('div');
               node.className = 'agent-thread-node running';

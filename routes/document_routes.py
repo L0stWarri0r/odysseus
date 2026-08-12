@@ -72,13 +72,10 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 session = db.query(DbSession).filter(DbSession.id == req.session_id).first()
                 if not session:
                     raise HTTPException(404, "Session not found")
-                # Match the lenient ownership model the rest of the app uses
-                # (see _owner_filter): only block when an AUTHENTICATED user is
-                # writing into a DIFFERENT user's session. In single-user /
-                # unconfigured / localhost-bypass mode the middleware leaves
-                # current_user unset (None), and those sessions are already
-                # served freely everywhere else.
-                if user and session.owner and session.owner != user:
+                # Strict ownership: null/empty-owner sessions must not be
+                # writable by an authenticated multi-user caller (IDOR).
+                # Unauthenticated / single-user (user falsy) keeps prior behavior.
+                if user and session.owner != user:
                     raise HTTPException(403, "Cannot create document in another user's session")
 
             doc_id = str(uuid.uuid4())
@@ -175,7 +172,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 sess = db.query(DbSession).filter(DbSession.id == session_id).first()
                 if not sess:
                     raise HTTPException(404, "Session not found")
-                if user and sess.owner and sess.owner != user:
+                if user and sess.owner != user:
                     raise HTTPException(403, "Cannot import into another user's session")
             finally:
                 db.close()
@@ -367,7 +364,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             # auth failures.
             if not session:
                 raise HTTPException(404, "Session not found")
-            if user and session.owner and session.owner != user:
+            if user and session.owner != user:
                 raise HTTPException(403, "Access denied")
             docs = db.query(Document).filter(
                 Document.session_id == session_id

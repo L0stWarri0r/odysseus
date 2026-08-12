@@ -29,6 +29,7 @@ from src.llm_core import llm_call_async
 from services.memory.memory_extractor import audit_memories
 from src.auth_helpers import get_current_user, require_user
 from src.endpoint_resolver import resolve_endpoint
+from routes.session_routes import _verify_session_owner
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,18 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
 
     def _owner(request: Request) -> Optional[str]:
         return get_current_user(request)
+
+    def _assert_session_owned(request: Request, session_id: str) -> None:
+        """Reject cross-tenant session access for memory extract/import/audit.
+
+        Multi-user: require the caller to own ``session_id`` (DB or in-memory
+        ghost). Single-user / AUTH_ENABLED=false: ``require_user`` returns ""
+        and we skip — there is no second tenant to attack.
+        """
+        user = require_user(request)
+        if not user:
+            return
+        _verify_session_owner(request, session_id, session_manager)
 
     def _verify_memory_owner(memory: dict, user: Optional[str]):
         """Raise 404 if user doesn't own this memory.
@@ -191,7 +204,7 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
     @router.post("/extract")
     async def extract_memory(request: Request, session: str = Form(...)) -> Dict[str, List[str]]:
         """Analyze a session's chat history and return memory suggestions."""
-        require_user(request)
+        _assert_session_owned(request, session)
         try:
             sess = session_manager.get_session(session)
         except KeyError:
@@ -275,6 +288,7 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
 
         # Fall back to session model if no default configured
         if not endpoint_url and session:
+            _assert_session_owned(request, session)
             try:
                 sess = session_manager.get_session(session)
                 endpoint_url = sess.endpoint_url
@@ -325,6 +339,7 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
         headers = {}
 
         if session:
+            _assert_session_owned(request, session)
             try:
                 sess = session_manager.get_session(session)
                 endpoint_url = sess.endpoint_url

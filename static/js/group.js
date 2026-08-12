@@ -674,7 +674,9 @@ function _createGroupBubble(model, box) {
   wrap.style.position = 'relative';
 
   // Role label — use character name if assigned, otherwise model name
-  const roleLabel = model._groupName || (model.character ? model.character.characterName : chatRenderer.shortModel(model.mid));
+  const roleLabel = uiModule.esc(
+    model._groupName || (model.character ? model.character.characterName : chatRenderer.shortModel(model.mid))
+  );
   const roleTs = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   wrap.innerHTML = `<div class="role">${roleLabel} <span class="role-timestamp">${roleTs}</span></div><div class="body"></div>`;
   chatRenderer.applyModelColor(wrap.querySelector('.role'), model.mid);

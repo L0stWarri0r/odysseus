@@ -1969,7 +1969,7 @@ import createResearchSynapse from './researchSynapse.js';
                   chatBox.appendChild(threadWrap);
                 }
                 threadWrap.classList.add('streaming');
-                const toolLabel = _toolLabels[json.tool.toLowerCase()] || json.tool;
+                const toolLabel = esc(_toolLabels[json.tool.toLowerCase()] || json.tool);
                 const node = document.createElement('div')
                 node.className = 'agent-thread-node running';
                 const cmdHtml = cmd ? `<pre class="agent-thread-cmd">${esc(cmd)}</pre>` : '';
@@ -2079,7 +2079,7 @@ import createResearchSynapse from './researchSynapse.js';
                   if (contentEl) {
                     const details = document.createElement('details');
                     details.className = 'agent-tool-output';
-                    details.innerHTML = `<summary>Screenshot</summary><img src="${json.screenshot}" style="max-width:100%;border-radius:6px;margin-top:6px;border:1px solid var(--border)" />`;
+                    details.innerHTML = `<summary>Screenshot</summary><img src="${esc(json.screenshot)}" style="max-width:100%;border-radius:6px;margin-top:6px;border:1px solid var(--border)" />`;
                     contentEl.appendChild(details);
                   }
                 }
