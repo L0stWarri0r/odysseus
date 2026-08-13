@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from core.database import SessionLocal, Note
-from src.auth_helpers import get_current_user
+from src.auth_helpers import get_current_user, owns_record
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,17 @@ def _note_to_dict(note: Note) -> Dict[str, Any]:
         "updated_at": note.updated_at.isoformat() if note.updated_at else None,
     }
 
+
+def _owns_note(note: Note, user: Optional[str]) -> bool:
+    """Fail-closed note ownership. Unauthenticated callers only see unowned rows."""
+    return owns_record(getattr(note, "owner", None), user)
+
+
+def _notes_for_user(q, user: Optional[str]):
+    """Restrict a notes query to rows the caller is allowed to see."""
+    if user:
+        return q.filter(Note.owner == user)
+    return q.filter((Note.owner == None) | (Note.owner == ""))  # noqa: E711
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +489,7 @@ def setup_note_routes(task_scheduler=None):
         db = SessionLocal()
         try:
             q = db.query(Note)
-            if user is not None:
-                q = q.filter(Note.owner == user)
+            q = _notes_for_user(q, user)
             if archived is not None:
                 q = q.filter(Note.archived == archived)
             else:
@@ -532,11 +542,7 @@ def setup_note_routes(task_scheduler=None):
         db = SessionLocal()
         try:
             note = db.query(Note).filter(Note.id == note_id).first()
-            if not note:
-                raise HTTPException(404, "Note not found")
-            # SECURITY: strict ownership — previously `note.owner and note.owner != user`
-            # let any user touch a row whose owner field was null/empty.
-            if user is not None and note.owner != user:
+            if not note or not _owns_note(note, user):
                 raise HTTPException(404, "Note not found")
             return _note_to_dict(note)
         finally:
@@ -549,11 +555,7 @@ def setup_note_routes(task_scheduler=None):
         db = SessionLocal()
         try:
             note = db.query(Note).filter(Note.id == note_id).first()
-            if not note:
-                raise HTTPException(404, "Note not found")
-            # SECURITY: strict ownership — previously `note.owner and note.owner != user`
-            # let any user touch a row whose owner field was null/empty.
-            if user is not None and note.owner != user:
+            if not note or not _owns_note(note, user):
                 raise HTTPException(404, "Note not found")
 
             if body.title is not None:
@@ -597,11 +599,7 @@ def setup_note_routes(task_scheduler=None):
         db = SessionLocal()
         try:
             note = db.query(Note).filter(Note.id == note_id).first()
-            if not note:
-                raise HTTPException(404, "Note not found")
-            # SECURITY: strict ownership — previously `note.owner and note.owner != user`
-            # let any user touch a row whose owner field was null/empty.
-            if user is not None and note.owner != user:
+            if not note or not _owns_note(note, user):
                 raise HTTPException(404, "Note not found")
             db.delete(note)
             db.commit()
@@ -616,11 +614,7 @@ def setup_note_routes(task_scheduler=None):
         db = SessionLocal()
         try:
             note = db.query(Note).filter(Note.id == note_id).first()
-            if not note:
-                raise HTTPException(404, "Note not found")
-            # SECURITY: strict ownership — previously `note.owner and note.owner != user`
-            # let any user touch a row whose owner field was null/empty.
-            if user is not None and note.owner != user:
+            if not note or not _owns_note(note, user):
                 raise HTTPException(404, "Note not found")
             note.pinned = not note.pinned
             db.commit()
@@ -635,11 +629,7 @@ def setup_note_routes(task_scheduler=None):
         db = SessionLocal()
         try:
             note = db.query(Note).filter(Note.id == note_id).first()
-            if not note:
-                raise HTTPException(404, "Note not found")
-            # SECURITY: strict ownership — previously `note.owner and note.owner != user`
-            # let any user touch a row whose owner field was null/empty.
-            if user is not None and note.owner != user:
+            if not note or not _owns_note(note, user):
                 raise HTTPException(404, "Note not found")
             note.archived = not note.archived
             db.commit()
@@ -654,11 +644,7 @@ def setup_note_routes(task_scheduler=None):
         db = SessionLocal()
         try:
             note = db.query(Note).filter(Note.id == note_id).first()
-            if not note:
-                raise HTTPException(404, "Note not found")
-            # SECURITY: strict ownership — previously `note.owner and note.owner != user`
-            # let any user touch a row whose owner field was null/empty.
-            if user is not None and note.owner != user:
+            if not note or not _owns_note(note, user):
                 raise HTTPException(404, "Note not found")
             if not note.items:
                 raise HTTPException(400, "Note has no checklist items")
@@ -709,26 +695,10 @@ def setup_note_routes(task_scheduler=None):
         ids = body.get("ids", [])
         if not isinstance(ids, list):
             raise HTTPException(400, "ids must be a list")
-        # v2 review HIGH-12: drop the legacy `(owner == user) | (owner ==
-        # None)` OR which let an authenticated user silently reorder
-        # every legacy-null-owner note belonging to other accounts. In
-        # an unconfigured (single-user) auth deploy the OR is still safe
-        # because there's no second user to attack; we keep that branch
-        # explicit and gated on AuthManager.is_configured.
-        try:
-            from core.auth import AuthManager
-            _allow_null = not AuthManager().is_configured
-        except Exception:
-            _allow_null = False
         db = SessionLocal()
         try:
             for i, nid in enumerate(ids):
-                q = db.query(Note).filter(Note.id == nid)
-                if user is not None:
-                    if _allow_null:
-                        q = q.filter((Note.owner == user) | (Note.owner == None))  # noqa: E711
-                    else:
-                        q = q.filter(Note.owner == user)
+                q = _notes_for_user(db.query(Note).filter(Note.id == nid), user)
                 note = q.first()
                 if note:
                     note.sort_order = i

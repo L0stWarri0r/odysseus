@@ -78,7 +78,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 # unconfigured / localhost-bypass mode the middleware leaves
                 # current_user unset (None), and those sessions are already
                 # served freely everywhere else.
-                if user and session.owner and session.owner != user:
+                if user and (session.owner or "") != user:
                     raise HTTPException(403, "Cannot create document in another user's session")
 
             doc_id = str(uuid.uuid4())

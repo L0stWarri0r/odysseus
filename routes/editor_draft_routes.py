@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from core.database import EditorDraft, SessionLocal
-from src.auth_helpers import get_current_user
+from src.auth_helpers import get_current_user, owns_record
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +48,8 @@ class DraftUpdate(BaseModel):
 
 
 def _owns(d: EditorDraft, user: Optional[str]) -> bool:
-    if user is None:
-        return True
-    return (d.owner or None) == user
+    """Fail-closed: unauthenticated callers only see unowned drafts."""
+    return owns_record(getattr(d, "owner", None), user)
 
 
 def _summary(d: EditorDraft) -> Dict[str, Any]:
@@ -84,8 +83,10 @@ def setup_editor_draft_routes() -> APIRouter:
         db = SessionLocal()
         try:
             q = db.query(EditorDraft).filter(EditorDraft.is_active == True)
-            if user is not None:
+            if user:
                 q = q.filter(EditorDraft.owner == user)
+            else:
+                q = q.filter((EditorDraft.owner == None) | (EditorDraft.owner == ""))  # noqa: E711
             rows = q.order_by(EditorDraft.updated_at.desc()).limit(200).all()
             return {"drafts": [_summary(d) for d in rows]}
         finally:

@@ -27,7 +27,7 @@ from src.request_models import MemoryAddRequest
 from core.database import SessionLocal
 from src.llm_core import llm_call_async
 from services.memory.memory_extractor import audit_memories
-from src.auth_helpers import get_current_user, require_user
+from src.auth_helpers import get_current_user, require_user, owns_record
 from src.endpoint_resolver import resolve_endpoint
 
 logger = logging.getLogger(__name__)
@@ -39,23 +39,41 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
     def _owner(request: Request) -> Optional[str]:
         return get_current_user(request)
 
+    def _load_owned(user: Optional[str]):
+        if user:
+            return memory_manager.load(owner=user)
+        return [m for m in memory_manager.load_all() if not m.get("owner")]
+
+    def _session_visible(sess, user: Optional[str]) -> bool:
+        """Fail-closed: don't leak another user's session name or history."""
+        return owns_record(getattr(sess, "owner", None) if sess is not None else None, user)
+
+    def _require_owned_session(session_id: str, user: Optional[str]):
+        try:
+            sess = session_manager.get_session(session_id)
+        except KeyError:
+            sess = None
+        if sess is None:
+            sess = getattr(session_manager, "sessions", {}).get(session_id)
+        if not sess or not _session_visible(sess, user):
+            raise HTTPException(404, "Session not found")
+        return sess
+
     def _verify_memory_owner(memory: dict, user: Optional[str]):
         """Raise 404 if user doesn't own this memory.
 
-        SECURITY: strict ownership — previously `mem_owner and mem_owner != user`
-        allowed any user to read/edit/delete memories with an empty/null owner
-        field, which leaked legacy data across the multi-user deploy.
+        Fail-closed: unauthenticated callers may only touch unowned rows;
+        authenticated callers may only touch their own (null-owner is not
+        a backdoor).
         """
-        if user is None:
-            return  # Auth disabled
-        if memory.get("owner") != user:
+        if not owns_record(memory.get("owner"), user):
             raise HTTPException(404, "Memory not found")
 
     @router.post("/debug")
     def debug_memory_relevance(request: Request, query: str = Form(...)):
         """Debug which memories would be triggered for a query"""
         user = _owner(request)
-        memories = memory_manager.load(owner=user)
+        memories = _load_owned(user)
         relevant = memory_manager.get_relevant_memories(query, memories, threshold=0.05)
 
         return {
@@ -87,7 +105,7 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
         text = (memory_data.text or "").strip()
         if not text:
             raise HTTPException(400, "empty memory")
-        user_mem = memory_manager.load(owner=user)
+        user_mem = _load_owned(user)
         if memory_manager.find_duplicates(text, user_mem):
             return {"ok": True, "count": len(user_mem), "message": "Memory already exists"}
 
@@ -111,13 +129,13 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
     def api_get_memory(request: Request):
         """Return all memory entries with their metadata."""
         user = _owner(request)
-        return {"memory": memory_manager.load(owner=user)}
+        return {"memory": _load_owned(user)}
 
     @router.post("/search")
     def search_memories(request: Request, query: str = Form(...), session_id: str = Form(None), category: str = Form(None)):
         """Search across all memories with optional filters."""
         user = _owner(request)
-        memories = memory_manager.load(owner=user)
+        memories = _load_owned(user)
 
         if session_id:
             memories = [m for m in memories if m.get("session_id") == session_id]
@@ -133,7 +151,7 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
     def memory_timeline(request: Request):
         """Get memories in chronological order with source session information."""
         user = _owner(request)
-        memories = memory_manager.load(owner=user)
+        memories = _load_owned(user)
         sorted_memories = sorted(memories, key=lambda x: x.get("timestamp", 0), reverse=True)
 
         results = []
@@ -150,7 +168,10 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
             session_id = memory.get("session_id")
             if session_id and session_id in session_manager.sessions:
                 session = session_manager.get_session(session_id)
-                memory["session_name"] = session.name if session else f"Session {session_id[:6]}"
+                if session and owns_record(getattr(session, "owner", None), user):
+                    memory["session_name"] = session.name if session else f"Session {session_id[:6]}"
+                else:
+                    memory["session_name"] = "Unknown"
             else:
                 memory["session_name"] = "Unknown"
 
@@ -161,22 +182,13 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
     @router.get("/by-session/{session_id}")
     def get_memory_by_session(request: Request, session_id: str):
         """Get all memories associated with a specific session."""
-        try:
-            session_manager.get_session(session_id)
-        except KeyError:
-            raise HTTPException(404, f"Session {session_id} not found")
-
         user = _owner(request)
-        memories = memory_manager.load(owner=user)
+        sess = _require_owned_session(session_id, user)
+        memories = _load_owned(user)
         session_memories = [m for m in memories if m.get("session_id") == session_id]
 
         session_memories.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-
-        try:
-            session = session_manager.get_session(session_id)
-            session_name = session.name if session else f"Session {session_id[:6]}"
-        except KeyError:
-            session_name = f"Session {session_id[:6]}"
+        session_name = sess.name if sess else f"Session {session_id[:6]}"
 
         for memory in session_memories:
             memory["session_name"] = session_name
@@ -192,10 +204,8 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
     async def extract_memory(request: Request, session: str = Form(...)) -> Dict[str, List[str]]:
         """Analyze a session's chat history and return memory suggestions."""
         require_user(request)
-        try:
-            sess = session_manager.get_session(session)
-        except KeyError:
-            raise HTTPException(404, "Session not found")
+        user = _owner(request)
+        sess = _require_owned_session(session, user)
 
         system_msg = {
             "role": "system",
@@ -275,12 +285,13 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
 
         # Fall back to session model if no default configured
         if not endpoint_url and session:
+            user = _owner(request)
             try:
-                sess = session_manager.get_session(session)
+                sess = _require_owned_session(session, user)
                 endpoint_url = sess.endpoint_url
                 model = sess.model
                 headers = sess.headers
-            except KeyError:
+            except HTTPException:
                 pass
 
         if not endpoint_url or not model:
@@ -326,12 +337,12 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
 
         if session:
             try:
-                sess = session_manager.get_session(session)
+                sess = _require_owned_session(session, _owner(request))
                 endpoint_url = sess.endpoint_url
                 model = sess.model
                 headers = sess.headers
-            except KeyError:
-                 raise HTTPException(404, "Session not found — needed for LLM config")
+            except HTTPException:
+                raise HTTPException(404, "Session not found — needed for LLM config")
         else:
             endpoint_url, model, headers = resolve_endpoint("utility", owner=_owner(request))
     
@@ -480,7 +491,7 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
     def get_memory_item(request: Request, memory_id: str):
         """Get a specific memory item by ID."""
         user = _owner(request)
-        memories = memory_manager.load(owner=user)
+        memories = _load_owned(user)
         for memory in memories:
             if memory["id"] == memory_id:
                 return {"memory": memory}

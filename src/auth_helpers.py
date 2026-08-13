@@ -116,6 +116,21 @@ def require_privilege(request: Request, key: str) -> str:
     return user
 
 
+def owns_record(record_owner: Optional[str], user: Optional[str]) -> bool:
+    """Fail-closed row ownership.
+
+    Authenticated callers (`user` is a non-empty username) may only touch
+    rows whose owner equals that username — including denying legacy
+    null-owner rows. Unauthenticated / AUTH_ENABLED=false callers may only
+    touch unowned rows, so leftover multi-user data is not mixed in.
+    """
+    caller = (user or "").strip() or None
+    owner = (record_owner or "").strip() or None
+    if caller:
+        return owner == caller
+    return owner is None
+
+
 def owner_filter(query, model_cls, user: str, *, include_shared: bool = True):
     """Filter `query` so only rows owned by `user` (and optionally null-owner
     'shared' rows) come through. No-op when `user` is empty (single-user
