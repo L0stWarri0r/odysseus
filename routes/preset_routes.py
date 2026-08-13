@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from src.request_models import PresetUpdateRequest
 from core.middleware import require_admin
+from src.auth_helpers import require_user
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,8 @@ def setup_preset_routes(preset_manager) -> APIRouter:
         from src.ai_interaction import _resolve_model
         from src.llm_core import llm_call_async
 
+        owner = require_user(request)
+
         data = await request.json()
         draft = (data.get("prompt") or "").strip()
         name = (data.get("name") or "").strip()
@@ -100,7 +103,7 @@ def setup_preset_routes(preset_manager) -> APIRouter:
 
         try:
             model_spec = data.get("model") or ""
-            url, model, headers = _resolve_model(model_spec)
+            url, model, headers = _resolve_model(model_spec, owner=owner or None)
             result = await llm_call_async(url, model, messages, temperature=0.8, max_tokens=500, headers=headers)
             return {"success": True, "prompt": result.strip()}
         except Exception as e:

@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from services.memory.skills import SkillsManager
-from src.auth_helpers import get_current_user
+from src.auth_helpers import get_current_user, owns_record
 from core.middleware import require_admin
 
 logger = logging.getLogger(__name__)
@@ -1072,14 +1072,16 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
         return get_current_user(request)
 
     def _verify_owner(skill: dict, user: Optional[str]):
-        if user is None:
-            return
-        # SECURITY: strict check — previously `sk_owner and sk_owner != user`
-        # let any user mutate/read a skill that happened to have no owner
-        # field (legacy or un-stamped writes), since the truthiness guard
-        # short-circuited the comparison. Treat missing owner as not-owned.
-        if skill.get("owner") != user:
+        # Fail-closed: unauthenticated callers may only touch unowned skills;
+        # authenticated callers may only touch skills they own (null-owner
+        # legacy rows are not a backdoor).
+        if not owns_record(skill.get("owner"), user):
             raise HTTPException(404, "Skill not found")
+
+    def _load_owned(user: Optional[str]):
+        if user:
+            return skills_manager.load(owner=user)
+        return [s for s in skills_manager.load_all() if not s.get("owner")]
 
     def _fire_skill_added(user: Optional[str]):
         try:
@@ -1091,7 +1093,7 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
     @router.get("")
     async def list_skills(request: Request):
         user = _owner(request)
-        skills = skills_manager.load(owner=user)
+        skills = _load_owned(user)
         return {"skills": skills, "count": len(skills)}
 
     @router.get("/index")
@@ -1101,6 +1103,9 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
         actually have access to?" view."""
         user = _owner(request)
         idx = skills_manager.index_for(owner=user)
+        if not user:
+            allowed = {s.get("name") for s in _load_owned(user)}
+            idx = [i for i in idx if i.get("name") in allowed]
         return {"index": idx, "count": len(idx)}
 
     @router.get("/builtin")

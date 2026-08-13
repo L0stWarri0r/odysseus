@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from core.database import SessionLocal, Signature
-from src.auth_helpers import get_current_user
+from src.auth_helpers import get_current_user, owns_record
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,11 @@ class SignatureCreate(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     svg: Optional[str] = None
+
+
+def _owns_signature(sig: Signature, user: Optional[str]) -> bool:
+    """Fail-closed: unauthenticated callers only see unowned signatures."""
+    return owns_record(getattr(sig, "owner", None), user)
 
 
 def _to_dict(s: Signature) -> Dict[str, Any]:
@@ -55,10 +60,12 @@ def setup_signature_routes() -> APIRouter:
         db = SessionLocal()
         try:
             q = db.query(Signature)
-            if user is not None:
+            if user:
                 # SECURITY: strict ownership — the previous OR predicate
                 # returned every null-owner signature to every user.
                 q = q.filter(Signature.owner == user)
+            else:
+                q = q.filter((Signature.owner == None) | (Signature.owner == ""))  # noqa: E711
             sigs = q.order_by(Signature.created_at.desc()).all()
             return {"signatures": [_to_dict(s) for s in sigs]}
         finally:
@@ -105,10 +112,8 @@ def setup_signature_routes() -> APIRouter:
         db = SessionLocal()
         try:
             sig = db.query(Signature).filter(Signature.id == sig_id).first()
-            if not sig:
+            if not sig or not _owns_signature(sig, user):
                 raise HTTPException(404, "Signature not found")
-            if user and sig.owner != user:
-                raise HTTPException(403, "Not your signature")
             db.delete(sig)
             db.commit()
             return {"deleted": sig_id}
