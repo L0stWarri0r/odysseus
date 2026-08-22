@@ -10,8 +10,10 @@ import logging
 import os
 import shutil
 import asyncio
+import ipaddress
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse, urlunparse
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
@@ -74,6 +76,55 @@ def _save_config(cfg: dict):
     # POSIX: restrict the BW_SESSION store to 0o600. Windows: no-op (profile dir
     # is ACL-restricted already).
     safe_chmod(str(VAULT_FILE), 0o600)
+
+
+_VAULT_BLOCKED_HOSTS = {
+    "localhost",
+    "localhost.",
+    "metadata",
+    "metadata.google.internal",
+}
+
+
+def _validate_vault_server_url(raw_url: str) -> str:
+    """Normalize a Vaultwarden/Bitwarden server URL.
+
+    Self-hosted Vaultwarden is commonly on a LAN, so private IPs are allowed.
+    Loopback, link-local, multicast, unspecified, and metadata hostnames are
+    not — those are SSRF gadgets, not vault servers.
+    """
+    url = (raw_url if isinstance(raw_url, str) else "").strip().rstrip("/")
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Vault URL must start with http:// or https://")
+    if not parsed.hostname:
+        raise ValueError("Vault URL must include a host")
+    if parsed.username or parsed.password:
+        raise ValueError("Put Vault credentials in the login form, not the URL")
+    if parsed.fragment:
+        raise ValueError("Vault URL fragments are not allowed")
+    try:
+        parsed.port
+    except ValueError:
+        raise ValueError("Vault URL has an invalid port")
+    host = (parsed.hostname or "").lower()
+    if host in _VAULT_BLOCKED_HOSTS or host.endswith(".localhost"):
+        raise ValueError("Vault URL host is not allowed")
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        ip = None
+    if ip is not None and (
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+        or ip.is_reserved
+    ):
+        raise ValueError("Vault URL host is not allowed")
+    return urlunparse(parsed._replace(fragment=""))
 
 
 async def _run_bw(args: list, session: str = None, input_text: str = None,
@@ -143,7 +194,10 @@ def setup_vault_routes():
         """Save vault URL + email. Runs 'bw config server' to point at Vaultwarden."""
         require_admin(request)
         cfg = _load_config()
-        cfg["server_url"] = req.server_url.strip().rstrip("/")
+        try:
+            cfg["server_url"] = _validate_vault_server_url(req.server_url)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
         cfg["email"] = req.email.strip()
 
         if cfg["server_url"]:

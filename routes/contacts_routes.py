@@ -216,17 +216,52 @@ def _build_vcard(name: str, email: str, uid: Optional[str] = None,
 _contact_cache = {"contacts": [], "fetched_at": None}
 
 
-def _abs_url(href: str) -> str:
-    """Combine a multistatus <href> (an absolute path like
-    /user/contacts/x.vcf) with the configured CardDAV server origin so we
-    get a fully-qualified URL to PUT/DELETE. If href is already absolute
-    (http...), return it as-is."""
+def _carddav_origin(parsed) -> tuple:
+    """(scheme, hostname, port) with http/https default ports filled in."""
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is None:
+        port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return scheme, host, port
+
+
+def _abs_url(href: str) -> str | None:
+    """Combine a multistatus <href> with the configured CardDAV origin.
+
+    Relative paths (``/user/contacts/x.vcf``) are joined onto the configured
+    server. Absolute ``http(s)://`` hrefs are accepted only when they share
+    that origin — otherwise a malicious REPORT could redirect PUT/DELETE
+    (and HTTP Basic credentials) off-host.
+    """
     from urllib.parse import urlparse, urlunparse
-    if href.startswith("http://") or href.startswith("https://"):
-        return href
+    href = (href or "").strip()
+    if not href:
+        return None
     cfg = _get_carddav_config()
-    p = urlparse(cfg["url"])
-    return urlunparse((p.scheme, p.netloc, href, "", "", ""))
+    base = (cfg.get("url") or "").strip()
+    parsed_base = urlparse(base)
+    if not parsed_base.scheme or not parsed_base.hostname:
+        return None
+    if href.startswith("//"):
+        href = f"{parsed_base.scheme}:{href}"
+    if href.startswith("http://") or href.startswith("https://"):
+        parsed_href = urlparse(href)
+        if parsed_href.username or parsed_href.password:
+            logger.warning("Rejecting CardDAV href with embedded credentials")
+            return None
+        if _carddav_origin(parsed_href) != _carddav_origin(parsed_base):
+            logger.warning(
+                "CardDAV href origin mismatch: %s vs configured %s",
+                href, base,
+            )
+            return None
+        return href
+    path = href if href.startswith("/") else "/" + href
+    return urlunparse((parsed_base.scheme, parsed_base.netloc, path, "", "", ""))
 
 
 # CardDAV REPORT body — pull every card's etag + raw vCard in ONE request,
@@ -325,7 +360,9 @@ def _resolve_resource_url(uid: str) -> str:
     def _lookup():
         for c in _contact_cache.get("contacts", []):
             if c.get("uid") == uid and c.get("href"):
-                return _abs_url(c["href"])
+                pinned = _abs_url(c["href"])
+                if pinned:
+                    return pinned
         return None
     found = _lookup()
     if found:
