@@ -16,6 +16,7 @@ from routes.cookbook_helpers import (
     _pip_install_fallback_chain,
     _ollama_bind_from_cmd,
     _safe_env_prefix,
+    _ssh_argv,
     _venv_safe_local_pip_install_cmd,
     _validate_gpus,
     _validate_repo_id,
@@ -53,6 +54,13 @@ def test_validate_ssh_port_rejects_shell_payload():
     with pytest.raises(HTTPException):
         _validate_ssh_port("22; touch /tmp/pwned")
     assert _validate_ssh_port("2222") == "2222"
+
+
+def test_ssh_argv_does_not_interpolate_host_into_a_shell_string():
+    argv = _ssh_argv("alice@gpu.lan", "2222", "nvidia-smi -L")
+    assert argv[:3] == ["ssh", "-o", "ConnectTimeout=5"]
+    assert argv[-2:] == ["alice@gpu.lan", "nvidia-smi -L"]
+    assert "-p" in argv and "2222" in argv
 
 
 def test_validate_gpus_accepts_indexes_only():
