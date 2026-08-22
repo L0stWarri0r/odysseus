@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 from routes.cookbook_helpers import (
     _SSH_PORT_RE, _REMOTE_HOST_RE, _SESSION_ID_RE,
     _validate_repo_id, _validate_serve_model_id, _validate_include, _validate_remote_host, _validate_token,
-    _validate_local_dir, _validate_ssh_port, _validate_gpus, _shell_path,
+    _validate_local_dir, _validate_ssh_port, _validate_gpus, _shell_path, _ssh_argv,
     _ps_squote, _bash_squote, _validate_serve_cmd, _parse_serve_phase,
     _safe_env_prefix, _local_tooling_path_export, _append_serve_preflight_exit_lines,
     _append_serve_exit_code_lines, _append_llama_cpp_linux_accel_build_lines, _cached_model_scan_script,
@@ -1270,24 +1270,26 @@ def setup_cookbook_routes() -> APIRouter:
         port = req.ssh_port
         if port is not None and port != "" and not re.fullmatch(r"\d{1,5}", port):
             raise HTTPException(400, "Invalid ssh_port")
-        pf = f"-p {port} " if port and port != "22" else ""
 
         # Detect platform: Windows first (echo %OS% → Windows_NT), then Termux, then Linux
-        detect_cmd = f'ssh {pf}{host} "echo %OS%"'
         platform = "linux"
         try:
-            proc = await asyncio.create_subprocess_shell(
-                detect_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            proc = await asyncio.create_subprocess_exec(
+                *_ssh_argv(host, port, "echo %OS%", connect_timeout=6),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             out = stdout.decode().strip()
             if "Windows_NT" in out:
                 platform = "windows"
             else:
-                # Check for Termux
-                detect_cmd2 = f"ssh {pf}{host} 'test -d /data/data/com.termux && echo termux || echo linux'"
-                proc2 = await asyncio.create_subprocess_shell(
-                    detect_cmd2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                proc2 = await asyncio.create_subprocess_exec(
+                    *_ssh_argv(
+                        host, port,
+                        "test -d /data/data/com.termux && echo termux || echo linux",
+                        connect_timeout=6,
+                    ),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
                 stdout2, _ = await asyncio.wait_for(proc2.communicate(), timeout=10)
                 platform = stdout2.decode().strip()
@@ -1305,7 +1307,6 @@ def setup_cookbook_routes() -> APIRouter:
                 "python -c \\\"from huggingface_hub import snapshot_download; print('OK')\\\""
                 '"'
             )
-            cmd = f'ssh {pf}{host} {setup_script}'
         elif platform == "termux":
             setup_script = (
                 "pkg install -y python tmux 2>/dev/null; "
@@ -1313,7 +1314,6 @@ def setup_cookbook_routes() -> APIRouter:
                 "pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests 2>/dev/null; "
                 "python3 -c 'from huggingface_hub import snapshot_download; print(\"OK\")'"
             )
-            cmd = f"ssh {pf}{host} '{setup_script}'"
         else:
             # Linux: auto-install tmux (via whichever package manager is available)
             # and huggingface_hub + hf_transfer (falling back to --user/--break-system-packages
@@ -1335,11 +1335,11 @@ def setup_cookbook_routes() -> APIRouter:
                 "pip3 install --user --break-system-packages -q huggingface_hub hf_transfer 2>/dev/null; "
                 "python3 -c 'from huggingface_hub import snapshot_download; print(\"OK\")'"
             )
-            cmd = f"ssh {pf}{host} '{setup_script}'"
 
         try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            proc = await asyncio.create_subprocess_exec(
+                *_ssh_argv(host, port, setup_script, connect_timeout=6),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
             output = stdout.decode() + stderr.decode()
@@ -1355,10 +1355,9 @@ def setup_cookbook_routes() -> APIRouter:
     async def _run_nvidia_smi(query: str, host: str | None, ssh_port: str | None, timeout: int = 8):
         """Run nvidia-smi locally or over SSH. Returns (stdout, error_or_None)."""
         if host:
-            pf = f"-p {ssh_port} " if ssh_port and ssh_port != "22" else ""
-            cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no {pf}{host} '{query}'"
-            proc = await asyncio.create_subprocess_shell(
-                cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            proc = await asyncio.create_subprocess_exec(
+                *_ssh_argv(host, ssh_port, query),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
         else:
             proc = await asyncio.create_subprocess_exec(
@@ -1378,7 +1377,6 @@ def setup_cookbook_routes() -> APIRouter:
     async def _run_gpu_shell(cmd_text: str, host: str | None, ssh_port: str | None, timeout: int = 8):
         """Run a small GPU probe shell command locally or over SSH."""
         if host:
-            pf = f"-p {ssh_port} " if ssh_port and ssh_port != "22" else ""
             quoted_cmd = shlex.quote(cmd_text)
             remote_cmd = (
                 f"if command -v sh >/dev/null 2>&1; then sh -lc {quoted_cmd}; "
@@ -1386,9 +1384,9 @@ def setup_cookbook_routes() -> APIRouter:
                 f"elif command -v zsh >/dev/null 2>&1; then zsh -lc {quoted_cmd}; "
                 "else echo 'No POSIX shell found for GPU probe' >&2; exit 127; fi"
             )
-            cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no {pf}{host} {shlex.quote(remote_cmd)}"
-            proc = await asyncio.create_subprocess_shell(
-                cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            proc = await asyncio.create_subprocess_exec(
+                *_ssh_argv(host, ssh_port, remote_cmd),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
         else:
             proc = await asyncio.create_subprocess_shell(
@@ -1678,10 +1676,9 @@ def setup_cookbook_routes() -> APIRouter:
         kill_cmd = f"kill -{sig} {req.pid}"
         try:
             if host:
-                pf = f"-p {req.ssh_port} " if req.ssh_port and req.ssh_port != "22" else ""
-                cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no {pf}{host} '{kill_cmd}'"
-                proc = await asyncio.create_subprocess_shell(
-                    cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                proc = await asyncio.create_subprocess_exec(
+                    *_ssh_argv(host, req.ssh_port, kill_cmd),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
             elif IS_WINDOWS:
                 # No `kill` binary / POSIX signals on Windows. taskkill /F /T tears

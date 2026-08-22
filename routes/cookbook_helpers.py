@@ -101,6 +101,26 @@ def _validate_ssh_port(v: str | None) -> str | None:
     return str(port)
 
 
+def _ssh_argv(host: str, ssh_port: str | None, remote_cmd: str, *, connect_timeout: int = 5) -> list[str]:
+    """Build an ssh argv that never goes through the local shell.
+
+    ``host`` must already have passed :func:`_validate_remote_host`. Passing
+    the remote command as a single argv element avoids interpolating it into
+    a locally-parsed shell string — quotes inside setup scripts used to break
+    ``ssh host 'script'``, and an unquoted host would be a local injection
+    point if validation ever lagged the call site.
+    """
+    argv = [
+        "ssh",
+        "-o", f"ConnectTimeout={int(connect_timeout)}",
+        "-o", "StrictHostKeyChecking=no",
+    ]
+    if ssh_port and str(ssh_port) != "22":
+        argv += ["-p", str(ssh_port)]
+    argv += [host, remote_cmd]
+    return argv
+
+
 def _validate_gpus(v: str | None) -> str | None:
     if v is None or v == "":
         return None
