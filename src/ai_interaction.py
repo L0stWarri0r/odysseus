@@ -1713,22 +1713,22 @@ async def do_generate_image(content: str, session_id: Optional[str] = None, owne
                 image_id = _save_to_gallery(filename)
 
             elif img.get("url"):
-                # Download external URL and save locally (DALL-E returns temp URLs)
+                # Download external URL and save locally (DALL-E returns temp URLs).
+                # Re-validate every redirect hop so a public first hop cannot
+                # bounce onto loopback / link-local / cloud metadata.
                 try:
-                    dl_resp = httpx.get(img["url"], timeout=60)
-                    if dl_resp.status_code == 200:
-                        img_dir = Path("data/generated_images")
-                        img_dir.mkdir(parents=True, exist_ok=True)
-                        filename = f"{uuid.uuid4().hex[:12]}.png"
-                        img_path = img_dir / filename
-                        img_path.write_bytes(dl_resp.content)
-                        image_url = f"/api/generated-image/{filename}"
-                        image_id = _save_to_gallery(filename)
-                    else:
-                        image_url = img["url"]  # fallback to external URL
+                    from src.url_security import fetch_public_http_bytes
+                    content = fetch_public_http_bytes(img["url"], timeout=60)
+                    img_dir = Path("data/generated_images")
+                    img_dir.mkdir(parents=True, exist_ok=True)
+                    filename = f"{uuid.uuid4().hex[:12]}.png"
+                    img_path = img_dir / filename
+                    img_path.write_bytes(content)
+                    image_url = f"/api/generated-image/{filename}"
+                    image_id = _save_to_gallery(filename)
                 except Exception as _dl_e:
-                    logger.warning(f"Failed to download DALL-E image: {_dl_e}")
-                    image_url = img["url"]  # fallback to external URL
+                    logger.warning(f"Failed to download generated image: {_dl_e}")
+                    return {"error": "Could not download generated image from a public URL"}
             else:
                 return {"error": "Image API returned unexpected format (no b64_json or url)"}
 

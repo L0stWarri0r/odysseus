@@ -265,28 +265,40 @@ def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
     async def delete_file_from_rag(filepath: str = Query(...), owner: str = Depends(require_user), _admin: None = Depends(require_admin)):
         """Delete a specific file from RAG index and optionally from disk."""
         try:
-            # Remove chunks from RAG vector store (best-effort)
+            if not filepath:
+                raise HTTPException(400, "filepath is required")
+            try:
+                abs_target = os.path.realpath(filepath)
+                uploads_abs = os.path.realpath(UPLOADS_DIR)
+                personal_abs = os.path.realpath(PERSONAL_DIR)
+            except (OSError, ValueError):
+                raise HTTPException(400, "Invalid filepath")
+
+            def _inside(target: str, base: str) -> bool:
+                try:
+                    return target == base or os.path.commonpath([target, base]) == base
+                except ValueError:
+                    return False
+
+            in_uploads = _inside(abs_target, uploads_abs) and abs_target != uploads_abs
+            in_personal = _inside(abs_target, personal_abs) and abs_target != personal_abs
+            if not in_uploads and not in_personal:
+                raise HTTPException(403, "File must be inside personal documents or uploads")
+
+            # Remove chunks from RAG vector store (best-effort). Try both the
+            # confined realpath and the original argument so rows indexed under
+            # either form still drop.
             removed = 0
             rag = _rag()
             if rag:
-                try:
-                    removed = rag.delete_by_source(filepath)
-                except Exception as e:
-                    logger.warning(f"RAG removal failed for {filepath}: {e}")
+                for source in dict.fromkeys([abs_target, filepath]):
+                    try:
+                        removed += rag.delete_by_source(source) or 0
+                    except Exception as e:
+                        logger.warning(f"RAG removal failed for {source}: {e}")
 
-            # Delete file from disk if it's in uploads dir
             deleted_from_disk = False
-            try:
-                abs_target = os.path.abspath(filepath)
-                base_abs = os.path.abspath(UPLOADS_DIR)
-                in_uploads = (
-                    abs_target == base_abs
-                    or os.path.commonpath([abs_target, base_abs]) == base_abs
-                )
-            except ValueError:
-                # commonpath raises on mixed drives / non-comparable paths
-                in_uploads = False
-            if in_uploads and abs_target != base_abs and os.path.exists(abs_target):
+            if in_uploads and os.path.isfile(abs_target):
                 os.remove(abs_target)
                 deleted_from_disk = True
 
@@ -298,6 +310,8 @@ def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
                 "removed_chunks": removed,
                 "deleted_from_disk": deleted_from_disk,
             }
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to delete file {filepath}: {e}")
             raise HTTPException(500, f"Failed to delete file: {str(e)}")
