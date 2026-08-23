@@ -4,10 +4,30 @@ from fastapi.testclient import TestClient
 from routes.hermes_routes import setup_hermes_routes
 
 
-def _client() -> TestClient:
+class FakeAuthManager:
+    is_configured = True
+
+    def is_admin(self, username):
+        return username == "admin"
+
+
+def _client(username="admin") -> TestClient:
     app = FastAPI()
+    app.state.auth_manager = FakeAuthManager()
+
+    @app.middleware("http")
+    async def _stamp_user(request, call_next):
+        if username is not None:
+            request.state.current_user = username
+        return await call_next(request)
+
     app.include_router(setup_hermes_routes())
     return TestClient(app)
+
+
+def test_hermes_preflight_requires_admin():
+    assert _client(None).post("/api/hermes/preflight", json={"message": "hi"}).status_code == 403
+    assert _client("nonadmin").post("/api/hermes/preflight", json={"message": "hi"}).status_code == 403
 
 
 def test_hermes_preflight_allows_normal_request():

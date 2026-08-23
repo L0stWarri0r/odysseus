@@ -14,6 +14,8 @@ from typing import Any
 
 
 _MEMORY_FILENAMES = ("MEMORY.md", "USER.md")
+_INVENTORY_MAX_FILES = 250
+_OUTSIDE_BASE = "[outside-base]"
 
 
 def default_hermes_home() -> Path:
@@ -36,10 +38,11 @@ def _safe_stat(path: Path) -> dict[str, Any]:
 
 
 def _relative(path: Path, base: Path) -> str:
+    """Return a path relative to base; never leak an escaped absolute path."""
     try:
-        return path.relative_to(base).as_posix()
-    except ValueError:
-        return path.as_posix()
+        return path.resolve().relative_to(base.resolve()).as_posix()
+    except (ValueError, OSError):
+        return _OUTSIDE_BASE
 
 
 def _file_entry(path: Path, base: Path) -> dict[str, Any]:
@@ -50,6 +53,23 @@ def _file_entry(path: Path, base: Path) -> dict[str, Any]:
         "exists": stat["exists"],
         "size_bytes": stat["size_bytes"],
     }
+
+
+def _bounded_rglob(directory: Path, pattern: str, limit: int = _INVENTORY_MAX_FILES) -> list[Path]:
+    """Collect matching files, stopping after `limit + 1` so callers can flag truncation.
+
+    Unbounded `Path.rglob` over a large Hermes skills/profile tree can stall the
+    inventory endpoint and produce a huge JSON payload.
+    """
+    out: list[Path] = []
+    try:
+        for path in directory.rglob(pattern):
+            out.append(path)
+            if len(out) > limit:
+                break
+    except OSError:
+        return out
+    return out
 
 
 def _query_count_map(cur: sqlite3.Cursor, table: str, column: str) -> dict[str, int]:
@@ -87,8 +107,10 @@ def _state_db_inventory(state_db: Path, base: Path) -> dict[str, Any]:
         return result
 
     try:
-        con = sqlite3.connect(f"file:{state_db.as_posix()}?mode=ro", uri=True)
-    except sqlite3.Error as exc:
+        # Path.as_uri() percent-encodes `?` / `#` so a weird filename cannot
+        # inject extra SQLite URI parameters past `mode=ro`.
+        con = sqlite3.connect(f"{state_db.resolve().as_uri()}?mode=ro", uri=True)
+    except (sqlite3.Error, OSError, ValueError) as exc:
         result["errors"].append(f"open_failed: {exc.__class__.__name__}")
         return result
 
@@ -122,8 +144,8 @@ def build_continuity_inventory(hermes_home: str | os.PathLike[str] | None = None
     profiles_dir = base / "profiles"
 
     memory_files = [_file_entry(memory_dir / name, base) for name in _MEMORY_FILENAMES]
-    profile_markdown = sorted(profile_dir.rglob("*.md")) if profile_dir.exists() else []
-    skill_files = sorted(skills_dir.rglob("SKILL.md")) if skills_dir.exists() else []
+    profile_markdown = _bounded_rglob(profile_dir, "*.md") if profile_dir.exists() else []
+    skill_files = _bounded_rglob(skills_dir, "SKILL.md") if skills_dir.exists() else []
     profile_names = sorted(path.name for path in profiles_dir.iterdir() if path.is_dir()) if profiles_dir.exists() else []
 
     privacy_warnings = [
@@ -141,9 +163,11 @@ def build_continuity_inventory(hermes_home: str | os.PathLike[str] | None = None
         "content_returned": False,
         "state_db": _state_db_inventory(base / "state.db", base),
         "memory_files": memory_files,
-        "profile_markdown_count": len(profile_markdown),
-        "profile_markdown_files": [_file_entry(path, base) for path in profile_markdown],
-        "skill_count": len(skill_files),
+        "profile_markdown_count": min(len(profile_markdown), _INVENTORY_MAX_FILES),
+        "profile_markdown_files": [_file_entry(path, base) for path in profile_markdown[:_INVENTORY_MAX_FILES]],
+        "profile_markdown_truncated": len(profile_markdown) > _INVENTORY_MAX_FILES,
+        "skill_count": min(len(skill_files), _INVENTORY_MAX_FILES),
+        "skill_count_truncated": len(skill_files) > _INVENTORY_MAX_FILES,
         "profile_names": profile_names,
         "privacy_warnings": privacy_warnings,
         "recommended_next_step": "Create a provenance-preserving continuity export/import manifest before activating any imported memories.",
