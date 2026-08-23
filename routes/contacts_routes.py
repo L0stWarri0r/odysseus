@@ -216,17 +216,55 @@ def _build_vcard(name: str, email: str, uid: Optional[str] = None,
 _contact_cache = {"contacts": [], "fetched_at": None}
 
 
-def _abs_url(href: str) -> str:
-    """Combine a multistatus <href> (an absolute path like
-    /user/contacts/x.vcf) with the configured CardDAV server origin so we
-    get a fully-qualified URL to PUT/DELETE. If href is already absolute
-    (http...), return it as-is."""
-    from urllib.parse import urlparse, urlunparse
-    if href.startswith("http://") or href.startswith("https://"):
-        return href
-    cfg = _get_carddav_config()
-    p = urlparse(cfg["url"])
-    return urlunparse((p.scheme, p.netloc, href, "", "", ""))
+def _origin(parsed) -> tuple:
+    """Scheme + host + effective port for origin comparison."""
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is None:
+        port = 443 if (parsed.scheme or "").lower() == "https" else 80
+    return ((parsed.scheme or "").lower(), host, port)
+
+
+def _abs_url(href: str, base_url: str | None = None) -> str | None:
+    """Resolve a CardDAV REPORT href against the configured origin.
+
+    Absolute hrefs from the server are accepted only when they share the
+    configured CardDAV origin. Off-host URLs, protocol-relative hosts, and
+    embedded credentials are rejected so a compromised or malicious CardDAV
+    response cannot redirect PUT/DELETE (with the user's credentials) at an
+    arbitrary host.
+    """
+    from urllib.parse import urljoin, urlparse, urlunparse
+
+    href = (href if isinstance(href, str) else "").strip()
+    if not href:
+        return None
+    cfg_url = base_url if base_url is not None else _get_carddav_config().get("url", "")
+    base = (cfg_url if isinstance(cfg_url, str) else "").strip()
+    if not base:
+        return None
+    base_p = urlparse(base)
+    if base_p.scheme not in {"http", "https"} or not base_p.hostname:
+        return None
+
+    if href.startswith("//"):
+        joined_p = urlparse(f"{base_p.scheme}:{href}")
+    elif href.startswith(("http://", "https://")):
+        joined_p = urlparse(href)
+    else:
+        joined_p = urlparse(urljoin(base if base.endswith("/") else base + "/", href))
+
+    if joined_p.scheme not in {"http", "https"} or not joined_p.hostname:
+        return None
+    if joined_p.username or joined_p.password:
+        return None
+    if _origin(joined_p) != _origin(base_p):
+        return None
+    path = joined_p.path or "/"
+    return urlunparse((base_p.scheme, base_p.netloc, path, "", joined_p.query, ""))
 
 
 # CardDAV REPORT body — pull every card's etag + raw vCard in ONE request,
@@ -251,7 +289,7 @@ def _fetch_via_report(cfg, auth):
             "REPORT", cfg["url"],
             content=_ADDRESSBOOK_QUERY.encode("utf-8"),
             headers={"Content-Type": "application/xml; charset=utf-8", "Depth": "1"},
-            auth=auth, timeout=10,
+            auth=auth, timeout=10, follow_redirects=False, trust_env=False,
         )
         if r.status_code not in (207, 200):
             return None
@@ -304,7 +342,7 @@ def _fetch_contacts(force=False):
         contacts = _fetch_via_report(cfg, auth)
         if contacts is None:
             # Fallback: plain GET, concatenated vCards, no hrefs.
-            r = httpx.get(cfg["url"], auth=auth, timeout=10)
+            r = httpx.get(cfg["url"], auth=auth, timeout=10, follow_redirects=False, trust_env=False)
             if r.status_code != 200:
                 logger.warning(f"CardDAV returned {r.status_code}")
                 return _contact_cache["contacts"]
@@ -325,7 +363,9 @@ def _resolve_resource_url(uid: str) -> str:
     def _lookup():
         for c in _contact_cache.get("contacts", []):
             if c.get("uid") == uid and c.get("href"):
-                return _abs_url(c["href"])
+                resolved = _abs_url(c["href"])
+                if resolved:
+                    return resolved
         return None
     found = _lookup()
     if found:
@@ -364,6 +404,8 @@ def _create_contact(name: str, email: str) -> bool:
             headers={"Content-Type": "text/vcard; charset=utf-8"},
             auth=auth,
             timeout=10,
+            follow_redirects=False,
+            trust_env=False,
         )
         if r.status_code in (200, 201, 204):
             # Invalidate cache
@@ -446,7 +488,7 @@ def _import_vcards(text: str) -> Dict:
             r = httpx.put(
                 url, data=vcard.encode("utf-8"),
                 headers={"Content-Type": "text/vcard; charset=utf-8"},
-                auth=auth, timeout=15,
+                auth=auth, timeout=15, follow_redirects=False, trust_env=False,
             )
             if r.status_code in (200, 201, 204):
                 imported += 1
@@ -610,6 +652,8 @@ def _update_contact(uid: str, name: str, emails: List[str], phones: List[str]) -
             headers={"Content-Type": "text/vcard; charset=utf-8"},
             auth=auth,
             timeout=10,
+            follow_redirects=False,
+            trust_env=False,
         )
         if r.status_code in (200, 201, 204):
             _contact_cache["fetched_at"] = None
@@ -633,7 +677,7 @@ def _delete_contact(uid: str) -> bool:
     url = _resolve_resource_url(uid)
     try:
         auth = (cfg["username"], cfg["password"]) if cfg["username"] else None
-        r = httpx.delete(url, auth=auth, timeout=10)
+        r = httpx.delete(url, auth=auth, timeout=10, follow_redirects=False, trust_env=False)
         if r.status_code in (200, 204):
             _contact_cache["fetched_at"] = None
             return True
@@ -745,7 +789,17 @@ def setup_contacts_routes():
     @router.put("/config")
     async def update_config(data: dict, _admin: str = Depends(require_admin)):
         settings = _load_settings()
-        for key in ("carddav_url", "carddav_username", "carddav_password"):
+        if "carddav_url" in data:
+            raw = data.get("carddav_url")
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                settings["carddav_url"] = ""
+            else:
+                try:
+                    from src.caldav_sync import validate_caldav_url
+                    settings["carddav_url"] = validate_caldav_url(str(raw))
+                except ValueError as e:
+                    return {"success": False, "error": str(e)}
+        for key in ("carddav_username", "carddav_password"):
             if key in data:
                 settings[key] = data[key]
         _save_settings(settings)

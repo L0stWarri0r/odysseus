@@ -775,6 +775,9 @@ import createResearchSynapse from './researchSynapse.js';
       const incognitoChk = el('incognito-toggle');
       if (incognitoChk && incognitoChk.checked) {
         fd.append('incognito', 'true');
+        // Incognito chats should also stay opaque to Hermes control on a
+        // local model (private_mode). The backend already honors this flag.
+        fd.append('private_mode', 'true');
       }
       if (presetsModule.getSelectedPreset()) {
         fd.append('preset_id', presetsModule.getSelectedPreset());
