@@ -49,3 +49,6 @@ def test_memory_js_fetches_inventory_and_marks_contents_hidden():
     assert "read-only scan" in js
     assert "loadHermesContinuityInventory(true)" in js
     assert "Hermes continuity inventory failed" in js
+    assert "credentials: 'same-origin'" in js
+    assert "Hermes continuity inventory is admin-only." in js
+    assert "Hermes continuity inventory needs a fresh login session." in js

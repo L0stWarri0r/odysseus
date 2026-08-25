@@ -23,11 +23,16 @@ _CACHE_NAME_RE = re.compile(r"odysseus-[A-Za-z0-9_.-]+")
 
 
 def default_odysseus_repo() -> Path:
-    """Resolve the local Odysseus checkout path."""
+    """Resolve the local Odysseus checkout path.
+
+    ODYSSEUS_REPO wins when set. Otherwise use this package's repository root
+    (`src/hermes_control/maintenance.py` → parents[2]) so Docker `/app` and a
+    clone that is not named `~/odysseus` still report the running checkout.
+    """
     env_repo = os.environ.get("ODYSSEUS_REPO")
     if env_repo:
         return Path(env_repo).expanduser()
-    return Path.home() / "odysseus"
+    return Path(__file__).resolve().parents[2]
 
 
 def default_intake_script() -> Path:
