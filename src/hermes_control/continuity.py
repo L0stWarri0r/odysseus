@@ -14,17 +14,55 @@ from typing import Any
 
 
 _MEMORY_FILENAMES = ("MEMORY.md", "USER.md")
+_INVENTORY_FILE_CAP = 250
 
 
 def default_hermes_home() -> Path:
-    """Resolve the Hermes home directory without inspecting private content."""
+    """Resolve the Hermes home directory without inspecting private content.
+
+    Prefer an explicit HERMES_HOME. Otherwise probe platform-typical locations
+    and return the first path that exists. If none exist, fall back to the
+    native default for this OS instead of always using a Windows AppData path.
+    """
     env_home = os.environ.get("HERMES_HOME")
     if env_home:
         return Path(env_home).expanduser()
+
+    home = Path.home()
     local_app_data = os.environ.get("LOCALAPPDATA")
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    candidates: list[Path] = []
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "hermes")
+    if xdg_data:
+        candidates.append(Path(xdg_data).expanduser() / "hermes")
+    candidates.extend(
+        (
+            home / ".hermes",
+            home / ".local" / "share" / "hermes",
+            home / "AppData" / "Local" / "hermes",
+        )
+    )
+
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if path.exists():
+                return path
+        except OSError:
+            continue
+
     if local_app_data:
         return Path(local_app_data) / "hermes"
-    return Path.home() / "AppData" / "Local" / "hermes"
+    if os.name == "nt":
+        return home / "AppData" / "Local" / "hermes"
+    if xdg_data:
+        return Path(xdg_data).expanduser() / "hermes"
+    return home / ".hermes"
 
 
 def _safe_stat(path: Path) -> dict[str, Any]:
@@ -37,9 +75,11 @@ def _safe_stat(path: Path) -> dict[str, Any]:
 
 def _relative(path: Path, base: Path) -> str:
     try:
-        return path.relative_to(base).as_posix()
-    except ValueError:
-        return path.as_posix()
+        resolved = path.resolve()
+        resolved_base = base.resolve()
+        return resolved.relative_to(resolved_base).as_posix()
+    except (ValueError, OSError):
+        return "[outside-base]"
 
 
 def _file_entry(path: Path, base: Path) -> dict[str, Any]:
@@ -50,6 +90,42 @@ def _file_entry(path: Path, base: Path) -> dict[str, Any]:
         "exists": stat["exists"],
         "size_bytes": stat["size_bytes"],
     }
+
+
+def _limited_files(
+    root: Path,
+    *,
+    name: str | None = None,
+    suffix: str | None = None,
+    limit: int = _INVENTORY_FILE_CAP,
+) -> list[Path]:
+    """Walk `root` without following symlinks and stop after `limit` matches."""
+    found: list[Path] = []
+    try:
+        if not root.is_dir():
+            return found
+    except OSError:
+        return found
+    try:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            dirnames.sort()
+            filenames.sort()
+            dirnames[:] = [
+                dirname
+                for dirname in dirnames
+                if not Path(dirpath, dirname).is_symlink()
+            ]
+            for filename in filenames:
+                if name is not None and filename != name:
+                    continue
+                if suffix is not None and not filename.endswith(suffix):
+                    continue
+                found.append(Path(dirpath) / filename)
+                if len(found) >= limit:
+                    return found
+    except OSError:
+        return found
+    return found
 
 
 def _query_count_map(cur: sqlite3.Cursor, table: str, column: str) -> dict[str, int]:
@@ -87,7 +163,7 @@ def _state_db_inventory(state_db: Path, base: Path) -> dict[str, Any]:
         return result
 
     try:
-        con = sqlite3.connect(f"file:{state_db.as_posix()}?mode=ro", uri=True)
+        con = sqlite3.connect(f"{state_db.resolve().as_uri()}?mode=ro", uri=True)
     except sqlite3.Error as exc:
         result["errors"].append(f"open_failed: {exc.__class__.__name__}")
         return result
@@ -122,8 +198,8 @@ def build_continuity_inventory(hermes_home: str | os.PathLike[str] | None = None
     profiles_dir = base / "profiles"
 
     memory_files = [_file_entry(memory_dir / name, base) for name in _MEMORY_FILENAMES]
-    profile_markdown = sorted(profile_dir.rglob("*.md")) if profile_dir.exists() else []
-    skill_files = sorted(skills_dir.rglob("SKILL.md")) if skills_dir.exists() else []
+    profile_markdown = _limited_files(profile_dir, suffix=".md")
+    skill_files = _limited_files(skills_dir, name="SKILL.md")
     profile_names = sorted(path.name for path in profiles_dir.iterdir() if path.is_dir()) if profiles_dir.exists() else []
 
     privacy_warnings = [

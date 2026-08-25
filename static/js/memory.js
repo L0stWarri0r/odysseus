@@ -137,7 +137,15 @@ export async function loadHermesContinuityInventory(force = false) {
   if (refresh) refresh.disabled = true;
 
   try {
-    const res = await fetch(`${window.location.origin}/api/hermes/continuity/inventory`);
+    const res = await fetch(`${window.location.origin}/api/hermes/continuity/inventory`, { credentials: 'same-origin' });
+    if (res.status === 401 || res.status === 403) {
+      if (status) {
+        status.textContent = res.status === 401
+          ? 'Hermes continuity inventory needs a fresh login session.'
+          : 'Hermes continuity inventory is admin-only.';
+      }
+      return;
+    }
     if (!res.ok) throw new Error(`Inventory returned ${res.status}`);
     const inventory = await res.json();
     renderHermesContinuityInventory(inventory);

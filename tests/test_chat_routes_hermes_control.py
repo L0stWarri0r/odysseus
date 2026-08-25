@@ -48,6 +48,26 @@ def test_chat_policy_private_local_mode_does_not_inspect_or_block_prompt_text():
     assert result.allow_web_search is False
 
 
+def test_chat_policy_incognito_implies_private_local_opacity():
+    result = _apply_hermes_control_policy(
+        message="OPENAI_API_KEY=sk-testsecret12345 C:\\Users\\Chase\\Documents\\private.txt",
+        session_id="s-incognito",
+        sess=DummySession("http://host.docker.internal:11434/v1"),
+        mode="chat",
+        private_mode=False,
+        incognito=True,
+        use_web="true",
+        use_research="true",
+        allow_web_search="true",
+    )
+
+    assert result.policy.content_visible_to_hermes is False
+    assert result.policy.findings == []
+    assert result.use_web is False
+    assert result.use_research is False
+    assert result.allow_web_search is False
+
+
 def test_chat_policy_blocks_visible_secret_before_llm_work():
     with pytest.raises(HTTPException) as excinfo:
         _apply_hermes_control_policy(

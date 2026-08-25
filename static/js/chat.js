@@ -775,6 +775,7 @@ import createResearchSynapse from './researchSynapse.js';
       const incognitoChk = el('incognito-toggle');
       if (incognitoChk && incognitoChk.checked) {
         fd.append('incognito', 'true');
+        fd.append('private_mode', 'true');
       }
       if (presetsModule.getSelectedPreset()) {
         fd.append('preset_id', presetsModule.getSelectedPreset());
