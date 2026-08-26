@@ -14,6 +14,10 @@ _WSL_LOCAL_PATH_RE = re.compile(
     r"/(?:mnt/)?[cC]/Users/[^\s`'\"]+",
     re.IGNORECASE,
 )
+# Require a path-like left boundary so https://example.com/home/foo is not flagged.
+_UNIX_LOCAL_PATH_RE = re.compile(
+    r"(?:(?<=^)|(?<=[\s`'\"]))(?:~/(?:[^\s`'\"]+)|/(?:home|Users|root|export/home)/[^\s`'\"]+)"
+)
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"\b[A-Za-z0-9_-]*(?:api[_-]?key|secret|token|password|passwd|pwd|client[_-]?secret|access[_-]?token|refresh[_-]?token)\b\s*[:=]\s*['\"]?[^'\"\s]{8,}",
     re.IGNORECASE,
@@ -25,6 +29,17 @@ _PRIVATE_KEY_RE = re.compile(
 _GITHUB_TOKEN_RE = re.compile(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{12,}\b")
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b", re.IGNORECASE)
 _DATABASE_URL_RE = re.compile(r"\b(?:postgres|postgresql|mysql|mongodb)://[^\s:@]+:[^\s@]+@[^\s]+", re.IGNORECASE)
+# Bare provider keys pasted without an assignment label (KEY=...).
+_PROVIDER_KEY_RE = re.compile(
+    r"\b(?:"
+    r"sk-(?:proj-|svcacct-|ant-|or-)?[A-Za-z0-9_-]{20,}"
+    r"|gsk_[A-Za-z0-9]{20,}"
+    r"|AIza[0-9A-Za-z_-]{20,}"
+    r"|hf_[A-Za-z0-9]{20,}"
+    r"|xai-[A-Za-z0-9]{20,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r")\b"
+)
 
 
 def _preview(value: str, max_len: int = 80) -> str:
@@ -44,6 +59,7 @@ def find_privacy_signals(text: str) -> List[HermesFinding]:
     for regex, label in (
         (_PRIVATE_KEY_RE, "Private key block"),
         (_SECRET_ASSIGNMENT_RE, "Secret or credential assignment"),
+        (_PROVIDER_KEY_RE, "Provider API key"),
         (_GITHUB_TOKEN_RE, "GitHub token"),
         (_BEARER_RE, "Bearer token"),
         (_DATABASE_URL_RE, "Database URL with credentials"),
@@ -61,6 +77,7 @@ def find_privacy_signals(text: str) -> List[HermesFinding]:
     for regex, label in (
         (_WINDOWS_LOCAL_PATH_RE, "Windows local path"),
         (_WSL_LOCAL_PATH_RE, "WSL/MSYS local path"),
+        (_UNIX_LOCAL_PATH_RE, "Unix/macOS local path"),
     ):
         for match in regex.finditer(text or ""):
             findings.append(

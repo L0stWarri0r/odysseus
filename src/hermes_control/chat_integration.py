@@ -32,6 +32,7 @@ def _apply_hermes_control_policy(
     sess,
     mode: str = "chat",
     private_mode: Any = False,
+    incognito: Any = False,
     use_web: Any = False,
     use_research: Any = False,
     allow_web_search: Any = False,
@@ -40,11 +41,13 @@ def _apply_hermes_control_policy(
 
     This helper only passes message text to Hermes Control when the request is
     not private/local. In private local mode, `evaluate()` itself guarantees
-    opacity and returns no text-derived findings.
+    opacity and returns no text-derived findings. Nobody/incognito implies
+    private_mode so the UI toggle actually reaches the opaque local lane.
     """
     use_web_bool = _truthy(use_web)
     use_research_bool = _truthy(use_research)
     allow_web_search_bool = _truthy(allow_web_search)
+    private_bool = _truthy(private_mode) or _truthy(incognito)
 
     policy = evaluate(
         HermesRequestContext(
@@ -53,7 +56,7 @@ def _apply_hermes_control_policy(
             mode=mode or "chat",
             endpoint_url=getattr(sess, "endpoint_url", None),
             model=getattr(sess, "model", None),
-            private_mode=_truthy(private_mode),
+            private_mode=private_bool,
             use_web=use_web_bool,
             use_research=use_research_bool,
             allow_web_search=allow_web_search_bool,

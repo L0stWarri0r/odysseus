@@ -98,6 +98,7 @@ def test_build_continuity_inventory_handles_missing_home(tmp_path):
 def test_hermes_continuity_inventory_route_uses_env_home(tmp_path, monkeypatch):
     hermes_home = _sample_hermes_home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("AUTH_ENABLED", "false")
     app = FastAPI()
     app.include_router(setup_hermes_routes())
     client = TestClient(app)

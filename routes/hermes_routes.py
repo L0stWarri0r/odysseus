@@ -31,11 +31,13 @@ def setup_hermes_routes() -> APIRouter:
     router = APIRouter(tags=["hermes"])
 
     @router.post("/api/hermes/preflight")
-    async def hermes_preflight(context: HermesRequestContext):
+    async def hermes_preflight(request: Request, context: HermesRequestContext):
+        _require_admin(request)
         return evaluate(context).model_dump(mode="json")
 
     @router.get("/api/hermes/continuity/inventory")
-    async def hermes_continuity_inventory():
+    async def hermes_continuity_inventory(request: Request):
+        _require_admin(request)
         return build_continuity_inventory()
 
     @router.get("/api/hermes/maintenance/status")

@@ -123,16 +123,34 @@ def _image_to_dict(img: GalleryImage, session_name: str = None) -> Dict[str, Any
 def _owner_filter(q, user):
     """Apply owner filtering to a gallery query.
 
-    When auth is disabled (single-user mode) get_current_user returns None
-    and there is no per-user scoping. The main library list and stats already
-    treat None as "show everything" (`if user is not None`), so this helper
-    must too — otherwise the tag/model filter sidebars come back empty and the
-    tag-cleanup endpoints (clear-user-tags, clear-ai-tags, dedupe-tags)
-    silently affect zero rows in the most common self-hosted deployment.
+    When auth is explicitly disabled (single-user mode) get_current_user
+    returns None and there is no per-user scoping, so the query stays
+    unfiltered. If auth is on and the caller is anonymous, fail closed with
+    `filter(False)` instead of returning every tenant's images.
     """
     if user is None:
-        return q
+        from src.auth_helpers import _auth_disabled
+        if _auth_disabled():
+            return q
+        return q.filter(False)
     return q.filter(GalleryImage.owner == user)
+
+
+def generated_image_allowed_for_user(user, row, *, auth_disabled: bool) -> bool:
+    """Whether /api/generated-image may serve this gallery row to `user`.
+
+    `row` is None when the file exists on disk but has not been imported into
+    the gallery yet (fresh generation). Null-owner rows fail closed for
+    authenticated callers so unmigrated images are not world-readable.
+    """
+    if auth_disabled:
+        return True
+    if not user:
+        return False
+    if row is None:
+        return True
+    owner = getattr(row, "owner", None) or None
+    return owner == user
 
 
 
