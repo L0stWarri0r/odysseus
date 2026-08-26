@@ -11,6 +11,7 @@ class ChatRequest(BaseModel):
     use_web: Optional[bool] = Field(default=False, description="Enable web search")
     use_research: Optional[bool] = Field(default=False, description="Enable deep research")
     private_mode: Optional[bool] = Field(default=False, description="Keep local-model prompts opaque to Hermes control")
+    incognito: Optional[bool] = Field(default=False, description="Nobody mode; implies private_mode for Hermes control")
     time_filter: Optional[str] = Field(default=None, description="Time filter for search")
     preset_id: Optional[str] = Field(default=None, description="Preset identifier")
     

@@ -10,7 +10,8 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
-def test_hermes_preflight_allows_normal_request():
+def test_hermes_preflight_allows_normal_request(monkeypatch):
+    monkeypatch.setenv("AUTH_ENABLED", "false")
     client = _client()
 
     response = client.post(
@@ -29,7 +30,8 @@ def test_hermes_preflight_allows_normal_request():
     assert data["content_visible_to_hermes"] is True
 
 
-def test_hermes_preflight_private_local_content_is_opaque():
+def test_hermes_preflight_private_local_content_is_opaque(monkeypatch):
+    monkeypatch.setenv("AUTH_ENABLED", "false")
     client = _client()
 
     response = client.post(

@@ -404,23 +404,31 @@ async def serve_generated_image(filename: str, request: Request):
     # 12-hex content hash could pull another user's image bytes. Require
     # auth and verify ownership via the gallery row (when one exists).
     try:
-        from src.auth_helpers import get_current_user
+        from src.auth_helpers import get_current_user, _auth_disabled
         from core.database import SessionLocal as _SL, GalleryImage as _GI
+        from routes.gallery_helpers import generated_image_allowed_for_user
         _user = get_current_user(request)
-        if _user:
-            _db = _SL()
-            try:
-                _row = _db.query(_GI).filter(_GI.filename == filename).first()
-                # Generated-but-not-yet-imported images have no row → allow.
-                # Row exists with a different owner → 404 (don't confirm existence).
-                if _row is not None and _row.owner and _row.owner != _user:
-                    raise HTTPException(status_code=404, detail="Image not found")
-            finally:
-                _db.close()
+        _db = _SL()
+        try:
+            _row = _db.query(_GI).filter(_GI.filename == filename).first()
+            if not generated_image_allowed_for_user(
+                _user, _row, auth_disabled=_auth_disabled()
+            ):
+                raise HTTPException(status_code=404, detail="Image not found")
+        finally:
+            _db.close()
     except HTTPException:
         raise
     except Exception:
-        pass
+        # Fail closed when auth is on: a DB/import hiccup must not serve
+        # another tenant's image bytes.
+        try:
+            from src.auth_helpers import _auth_disabled as _auth_off
+            auth_off = _auth_off()
+        except Exception:
+            auth_off = False
+        if not auth_off:
+            raise HTTPException(status_code=404, detail="Image not found")
     ext = filename.rsplit('.', 1)[-1].lower()
     mime = {
         "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",

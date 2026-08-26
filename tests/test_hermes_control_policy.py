@@ -59,6 +59,50 @@ def test_local_path_alone_is_allowed_not_nagged():
     assert result.requires_user_permission is False
 
 
+def test_unix_local_path_is_allowed_not_nagged():
+    ctx = HermesRequestContext(
+        message="Open /home/lost/Projects/odysseus and explain the structure.",
+        session_id="session-unix",
+        endpoint_url="https://api.openai.com/v1",
+        model="cloud-model",
+    )
+
+    result = evaluate(ctx)
+
+    assert result.decision == HermesDecision.ALLOW
+    assert any(f.type == "local_path" and f.severity == "info" for f in result.findings)
+    assert result.requires_user_permission is False
+
+
+def test_url_with_home_segment_is_not_a_local_path_finding():
+    ctx = HermesRequestContext(
+        message="Read https://example.com/home/lost/docs for the API.",
+        session_id="session-url",
+        endpoint_url="https://api.openai.com/v1",
+        model="cloud-model",
+    )
+
+    result = evaluate(ctx)
+
+    assert result.decision == HermesDecision.ALLOW
+    assert not any(f.type == "local_path" for f in result.findings)
+
+
+def test_bare_provider_api_key_is_blocked():
+    ctx = HermesRequestContext(
+        message="Use sk-proj-abcdefghijklmnopqrstuvwxyz1234567890 please.",
+        session_id="session-key",
+        endpoint_url="https://api.openai.com/v1",
+        model="cloud-model",
+    )
+
+    result = evaluate(ctx)
+
+    assert result.decision == HermesDecision.BLOCK
+    assert any(f.type == "secret" and f.label == "Provider API key" for f in result.findings)
+    assert all(f.preview == "[REDACTED]" for f in result.findings if f.type == "secret")
+
+
 def test_local_model_web_access_is_disabled():
     ctx = HermesRequestContext(
         message="Search the web for recent local LLM news.",
