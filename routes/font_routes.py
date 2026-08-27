@@ -1,6 +1,7 @@
 """Custom font discovery — lists user-supplied font files in static/fonts/custom/."""
 import os
 import re
+from urllib.parse import quote
 from fastapi import APIRouter
 
 CUSTOM_FONTS_DIR = os.path.join("static", "fonts", "custom")
@@ -42,12 +43,15 @@ def setup_font_routes():
             ext = os.path.splitext(f)[1].lower()
             if ext not in FONT_EXTENSIONS:
                 continue
+            full = os.path.join(CUSTOM_FONTS_DIR, f)
+            if not os.path.isfile(full):
+                continue
             family = _derive_family(f)
             if family not in families:
                 families[family] = []
             families[family].append({
                 "file": f,
-                "url": f"/static/fonts/custom/{f}",
+                "url": f"/static/fonts/custom/{quote(f, safe='.-_')}",
                 "format": ext.lstrip('.'),
             })
         return {"fonts": families}

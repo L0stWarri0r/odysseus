@@ -358,13 +358,20 @@ let _customFonts = {};
 // Track which custom font families already have @font-face injected
 const _injectedFonts = new Set();
 
+export function _cssString(value) {
+  // Keep @font-face / font-family interpolations from breaking out of quotes.
+  return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/[\n\r\f]/g, '');
+}
+
 function _injectFontFace(familyName, variants) {
   if (_injectedFonts.has(familyName)) return;
   const style = document.createElement('style');
   style.dataset.customFont = familyName;
   const fmtMap = { woff2: 'woff2', woff: 'woff', ttf: 'truetype', otf: 'opentype' };
+  const family = _cssString(familyName);
   for (const v of variants) {
-    style.textContent += `@font-face { font-family: '${familyName}'; src: url('${v.url}') format('${fmtMap[v.format] || v.format}'); font-display: swap; }\n`;
+    const fmt = fmtMap[v.format] || 'truetype';
+    style.textContent += `@font-face { font-family: '${family}'; src: url('${_cssString(v.url)}') format('${fmt}'); font-display: swap; }\n`;
   }
   document.head.appendChild(style);
   _injectedFonts.add(familyName);
@@ -377,7 +384,7 @@ export function applyFontDensity(font, density) {
   if (!family && _customFonts[f]) {
     // It's a custom font from the local folder
     _injectFontFace(f, _customFonts[f]);
-    family = "'" + f + "', sans-serif";
+    family = "'" + _cssString(f) + "', sans-serif";
   }
   if (!family) family = FONT_MAP[DEFAULT_FONT];
   document.documentElement.style.setProperty('--font-family', family);

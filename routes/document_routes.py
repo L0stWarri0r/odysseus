@@ -1113,7 +1113,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             return Response(
                 content=png_bytes,
                 media_type="image/png",
-                headers={"Cache-Control": "public, max-age=3600"},
+                headers={"Cache-Control": "private, max-age=3600"},
             )
         finally:
             pdf_doc.close()
