@@ -435,7 +435,7 @@ async def serve_generated_image(filename: str, request: Request):
     return FileResponse(
         str(img_path),
         media_type=mime,
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
     )
 
 # ========= YOUTUBE INIT =========

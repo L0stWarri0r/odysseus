@@ -1052,10 +1052,13 @@ def setup_gallery_routes() -> APIRouter:
                         if item.get("b64_json"):
                             raw_b64 = item["b64_json"]
                         elif item.get("url"):
-                            async with httpx.AsyncClient(timeout=60) as c2:
-                                img_r = await c2.get(item["url"])
-                                if img_r.status_code == 200:
-                                    raw_b64 = base64.b64encode(img_r.content).decode()
+                            from src.url_security import fetch_public_http_bytes
+                            try:
+                                raw_b64 = base64.b64encode(
+                                    fetch_public_http_bytes(item["url"], timeout=60)
+                                ).decode()
+                            except Exception:
+                                raw_b64 = None
                     if not raw_b64:
                         raise HTTPException(502, "OpenAI returned no image")
 
@@ -1293,10 +1296,15 @@ def setup_gallery_routes() -> APIRouter:
                             if item.get("b64_json"):
                                 return {"image": item["b64_json"]}
                             if item.get("url"):
-                                async with httpx.AsyncClient(timeout=60) as c2:
-                                    ir = await c2.get(item["url"])
-                                    if ir.status_code == 200:
-                                        return {"image": _b64.b64encode(ir.content).decode()}
+                                from src.url_security import fetch_public_http_bytes
+                                try:
+                                    return {
+                                        "image": _b64.b64encode(
+                                            fetch_public_http_bytes(item["url"], timeout=60)
+                                        ).decode()
+                                    }
+                                except Exception:
+                                    last_err = f"{path}: image URL fetch rejected"
                     last_err = f"{path}: server returned no image"
                 except httpx.ConnectError as e:
                     raise HTTPException(502, f"Can't reach diffusion server at {base}: {e}")

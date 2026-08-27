@@ -2,6 +2,7 @@
 """Google Keep-style notes / checklists API."""
 
 import json
+import re
 import uuid
 import logging
 from typing import Dict, Any, Optional
@@ -14,6 +15,25 @@ from src.auth_helpers import get_current_user
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
+
+_NTFY_TOPIC_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _http_header_value(value: str | None, fallback: str = "") -> str:
+    """Strip CR/LF/control chars so user text cannot split HTTP headers."""
+    cleaned = "".join(
+        ch for ch in str(value or "")
+        if ch not in "\r\n\x00" and (ch >= " " or ch in "\t")
+    ).strip()
+    return (cleaned[:180] or fallback)
+
+
+def _ntfy_topic(value: str | None) -> str:
+    """Restrict ntfy topics to a path-safe token so they cannot rewrite the URL."""
+    topic = str(value or "").strip()
+    if _NTFY_TOPIC_RE.fullmatch(topic):
+        return topic
+    return "reminders"
 
 
 # ---------------------------------------------------------------------------
@@ -373,9 +393,13 @@ async def dispatch_reminder(
             )
             if intg:
                 base = intg["base_url"].rstrip("/")
-                topic = settings.get("reminder_ntfy_topic") or "reminders"
+                topic = _ntfy_topic(settings.get("reminder_ntfy_topic") or "reminders")
                 ntfy_body = synthesis or note_body or title
-                hdrs = {"Title": title or "Reminder", "Priority": "high", "Tags": "bell"}
+                hdrs = {
+                    "Title": _http_header_value(title, "Reminder"),
+                    "Priority": "high",
+                    "Tags": "bell",
+                }
                 api_key = intg.get("api_key", "")
                 if api_key:
                     hdrs["Authorization"] = f"Bearer {api_key}"

@@ -124,25 +124,41 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 img_path.write_bytes(base64.b64decode(img["b64_json"]))
                 image_url = f"/api/generated-image/{filename}"
 
-                # Save to gallery
+                # MCP stdio has no request user. Only stamp a gallery row in
+                # single-user mode (AUTH_ENABLED=false); otherwise a null-owner
+                # row is world-readable via /api/generated-image and the library.
                 try:
-                    from src.database import SessionLocal, GalleryImage
-                    db = SessionLocal()
-                    db.add(GalleryImage(
-                        id=str(uuid.uuid4()),
-                        filename=filename,
-                        prompt=prompt,
-                        model=model_id,
-                        size=size,
-                        quality=payload.get("quality", "medium"),
-                    ))
-                    db.commit()
-                    db.close()
+                    import os
+                    if os.getenv("AUTH_ENABLED", "true").lower() == "false":
+                        from src.database import SessionLocal, GalleryImage
+                        db = SessionLocal()
+                        db.add(GalleryImage(
+                            id=str(uuid.uuid4()),
+                            filename=filename,
+                            prompt=prompt,
+                            model=model_id,
+                            size=size,
+                            quality=payload.get("quality", "medium"),
+                        ))
+                        db.commit()
+                        db.close()
                 except Exception:
                     pass
 
             elif img.get("url"):
-                image_url = img["url"]
+                # Never return a provider-supplied URL to the client (CSP blocks
+                # it, and fetching it server-side without a public-URL check is
+                # SSRF). Download onto disk the same way b64_json is handled.
+                from src.url_security import fetch_public_http_bytes
+                try:
+                    content = fetch_public_http_bytes(img["url"], timeout=60)
+                except Exception as e:
+                    return [TextContent(type="text", text=f"Error: Could not save generated image: {e}")]
+                img_dir = Path("data/generated_images")
+                img_dir.mkdir(parents=True, exist_ok=True)
+                filename = f"{uuid.uuid4().hex[:12]}.png"
+                (img_dir / filename).write_bytes(content)
+                image_url = f"/api/generated-image/{filename}"
             else:
                 return [TextContent(type="text", text="Error: Unexpected image API response format")]
 

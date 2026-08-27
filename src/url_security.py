@@ -92,3 +92,45 @@ def validate_public_http_url(url: str, *, max_length: int = 2048) -> str:
     if not is_public_http_url(cleaned):
         raise ValueError("URL must point to a public HTTP(S) endpoint")
     return cleaned
+
+
+def fetch_public_http_bytes(
+    url: str,
+    *,
+    timeout: float = 30,
+    max_bytes: int = 20 * 1024 * 1024,
+    max_redirects: int = 5,
+) -> bytes:
+    """GET a public HTTP(S) URL, re-checking each redirect hop.
+
+    ``httpx.get`` follows redirects by default, which would let a public
+    first hop bounce onto loopback/link-local/metadata. Each Location is
+    validated with :func:`is_public_http_url` before the next request.
+    ``trust_env=False`` ignores HTTP(S)_PROXY so a local proxy env cannot
+    hijack the fetch.
+    """
+    import httpx
+    from urllib.parse import urljoin
+
+    current = validate_public_http_url(url)
+    for _ in range(max_redirects + 1):
+        if not is_public_http_url(current):
+            raise ValueError("URL must point to a public HTTP(S) endpoint")
+        response = httpx.get(
+            current,
+            timeout=timeout,
+            follow_redirects=False,
+            trust_env=False,
+        )
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("location")
+            if not location:
+                raise ValueError("Redirect without Location")
+            current = urljoin(str(response.url), location)
+            continue
+        response.raise_for_status()
+        content = response.content
+        if len(content) > max_bytes:
+            raise ValueError("Response too large")
+        return content
+    raise ValueError("Too many redirects")
