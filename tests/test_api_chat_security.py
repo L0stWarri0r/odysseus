@@ -19,6 +19,11 @@ import pytest
     "http://[fc00::1]/v1",
     "http://224.0.0.1/v1",
     "http://0.0.0.0/v1",
+    "http://[::]/v1",
+    "http://[::ffff:127.0.0.1]/v1",
+    "http://[::ffff:169.254.169.254]/latest/meta-data/",
+    "http://100.64.0.1/v1",
+    "http://intranet.local/v1",
     "file:///etc/passwd",
 ])
 def test_public_url_validator_blocks_internal_targets(url):

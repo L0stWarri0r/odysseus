@@ -28,10 +28,12 @@ logger = logging.getLogger(__name__)
 _PRIVATE_NETWORKS = (
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("::/128"),
     ipaddress.ip_network("::1/128"),
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
@@ -39,7 +41,17 @@ _PRIVATE_NETWORKS = (
 
 
 def _is_private_address(addr: ipaddress._BaseAddress) -> bool:
-    return addr.is_private or addr.is_loopback or addr.is_link_local or any(addr in net for net in _PRIVATE_NETWORKS)
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_unspecified
+        or addr.is_reserved
+        or any(addr in net for net in _PRIVATE_NETWORKS)
+    )
 
 
 def _resolve_hostname_ips(hostname: str) -> list[ipaddress._BaseAddress]:
@@ -65,7 +77,7 @@ def _public_http_url(url: str) -> bool:
         if not host:
             return False
         lower = host.lower()
-        if lower in ("localhost", "metadata", "metadata.google.internal"):
+        if lower in ("localhost", "localhost.", "metadata", "metadata.google.internal"):
             return False
         if lower.endswith((".local", ".localhost", ".internal", ".lan", ".intranet")):
             return False
@@ -84,7 +96,13 @@ def _get_public_url(url: str, headers: dict, timeout: int, max_redirects: int = 
     for _ in range(max_redirects + 1):
         if not _public_http_url(current):
             raise httpx.RequestError("Blocked private/internal URL", request=httpx.Request("GET", current))
-        response = httpx.get(current, headers=headers, timeout=timeout, follow_redirects=False)
+        response = httpx.get(
+            current,
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=False,
+            trust_env=False,
+        )
         if response.status_code not in (301, 302, 303, 307, 308):
             return response
         location = response.headers.get("location")

@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 _INTERNAL_HOSTNAMES = {
     "localhost",
+    "localhost.",
     "metadata",
     "metadata.google.internal",
 }
@@ -45,6 +46,11 @@ def _resolve_hostname_ips(hostname: str) -> list[ipaddress._BaseAddress]:
 
 
 def _blocked_ip(addr: ipaddress._BaseAddress) -> bool:
+    # IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 / ::ffff:169.254.169.254)
+    # must be judged as the embedded v4 — otherwise loopback and cloud
+    # metadata slip past is_loopback / is_link_local / v4-only networks.
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
     return (
         any(addr in net for net in _BLOCKED_NETWORKS)
         or addr.is_private
@@ -72,7 +78,9 @@ def _host_resolves_publicly(hostname: str) -> bool:
 
 
 def is_public_http_url(url: str) -> bool:
-    parsed = urlparse((url or "").strip())
+    if not isinstance(url, str):
+        return False
+    parsed = urlparse(url.strip())
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         return False
     return _host_resolves_publicly(parsed.hostname)
