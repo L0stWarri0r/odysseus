@@ -28,18 +28,44 @@ logger = logging.getLogger(__name__)
 _PRIVATE_NETWORKS = (
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("::/128"),
     ipaddress.ip_network("::1/128"),
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
 )
 
+_INTERNAL_HOSTNAMES = {
+    "localhost",
+    "localhost.",
+    "metadata",
+    "metadata.google.internal",
+}
+_INTERNAL_SUFFIXES = (
+    ".localhost",
+    ".local",
+    ".internal",
+    ".lan",
+    ".intranet",
+)
+
 
 def _is_private_address(addr: ipaddress._BaseAddress) -> bool:
-    return any(addr in net for net in _PRIVATE_NETWORKS) or addr.is_private or addr.is_loopback
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return (
+        any(addr in net for net in _PRIVATE_NETWORKS)
+        or addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_unspecified
+        or addr.is_reserved
+    )
 
 
 def _resolve_hostname_ips(hostname: str) -> List[ipaddress._BaseAddress]:
@@ -51,11 +77,16 @@ def _resolve_hostname_ips(hostname: str) -> List[ipaddress._BaseAddress]:
 
 
 def _public_http_url(url: str) -> bool:
-    parsed = urlparse(url)
+    if not isinstance(url, str) or not url.strip():
+        return False
+    try:
+        parsed = urlparse(url.strip())
+    except Exception:
+        return False
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         return False
     host = parsed.hostname.strip().lower()
-    if host in ("localhost", "metadata.google.internal", "metadata"):
+    if host in _INTERNAL_HOSTNAMES or host.endswith(_INTERNAL_SUFFIXES):
         return False
     try:
         return not _is_private_address(ipaddress.ip_address(host))
@@ -75,7 +106,9 @@ def _get_public_url(url: str, *, headers: dict, timeout: int) -> httpx.Response:
         raise httpx.RequestError(f"Blocked non-public URL: {url}")
 
     current = url
-    with httpx.Client(headers=headers, timeout=timeout, follow_redirects=False) as client:
+    with httpx.Client(
+        headers=headers, timeout=timeout, follow_redirects=False, trust_env=False
+    ) as client:
         for _ in range(8):
             response = client.get(current)
             if response.status_code not in (301, 302, 303, 307, 308):

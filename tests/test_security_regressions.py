@@ -822,6 +822,11 @@ import pytest as _pytest
     "http://[::1]/",                      # IPv6 loopback
     "http://[fc00::1]/",                  # IPv6 unique-local (ULA)
     "http://[fe80::1]/",                  # IPv6 link-local
+    "http://[::]/",                       # IPv6 unspecified
+    "http://[::ffff:127.0.0.1]/",         # IPv4-mapped loopback
+    "http://[::ffff:169.254.169.254]/",   # IPv4-mapped cloud metadata
+    "http://100.64.0.1/",                 # CGNAT / Tailscale
+    "http://intranet.local/",             # internal suffix
     "file:///etc/passwd",                 # unsupported scheme
     "ftp://example.com/",                 # unsupported scheme
 ])
