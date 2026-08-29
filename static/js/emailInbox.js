@@ -9,6 +9,7 @@ import { initEmailLibrary, openEmailLibrary, closeEmailLibrary, isOpen as isLibO
 import * as Modals from './modalManager.js';
 import { applyEdgeDock } from './modalSnap.js';
 import { buildReplyAllCc } from './emailLibrary/replyRecipients.js';
+import { assertEmailWriteOk } from './emailLibrary/utils.js';
 
 const API_BASE = window.location.origin;
 const _acct = () => window.__odysseusActiveEmailAccount
@@ -1075,11 +1076,13 @@ async function _createReplyReminder(em, dueDate) {
 
 async function _archiveEmail(em) {
   try {
-    await fetch(`${API_BASE}/api/email/archive/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'POST' });
+    const res = await fetch(`${API_BASE}/api/email/archive/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'POST' });
+    await assertEmailWriteOk(res);
     _emails = _emails.filter(e => e.uid !== em.uid);
     _renderList();
   } catch (e) {
     console.error('Failed to archive:', e);
+    import('./ui.js').then(m => m.showError && m.showError(e.message || 'Failed to archive email')).catch(() => {});
   }
 }
 
@@ -1089,11 +1092,14 @@ async function _deleteEmail(em) {
   const ok = await styledConfirm(`Delete "${subject}"?`, { confirmText: 'Delete', cancelText: 'Cancel', danger: true });
   if (!ok) return;
   try {
-    await fetch(`${API_BASE}/api/email/delete/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'DELETE' });
+    const res = await fetch(`${API_BASE}/api/email/delete/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'DELETE' });
+    await assertEmailWriteOk(res);
     _emails = _emails.filter(e => e.uid !== em.uid);
     _renderList();
   } catch (e) {
     console.error('Failed to delete:', e);
+    const { showError } = await import('./ui.js');
+    showError(e.message || 'Failed to delete email');
   }
 }
 
@@ -1112,13 +1118,22 @@ async function _toggleDone(em, itemEl) {
   }
   try {
     if (newState) {
-      await fetch(`${API_BASE}/api/email/mark-answered/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'POST' });
-      await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'POST' });
+      const answered = await fetch(`${API_BASE}/api/email/mark-answered/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'POST' });
+      await assertEmailWriteOk(answered);
+      const read = await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'POST' });
+      await assertEmailWriteOk(read);
     } else {
-      await fetch(`${API_BASE}/api/email/clear-answered/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'POST' });
+      const cleared = await fetch(`${API_BASE}/api/email/clear-answered/${em.uid}?folder=${encodeURIComponent(_currentFolder)}${_acct()}`, { method: 'POST' });
+      await assertEmailWriteOk(cleared);
     }
   } catch (e) {
     console.error('Failed to toggle done:', e);
+    em.is_answered = !newState;
+    if (itemEl) {
+      const check = itemEl.querySelector('.email-done-check');
+      if (check) check.classList.toggle('active', !newState);
+    }
+    import('./ui.js').then(m => m.showError && m.showError(e.message || 'Failed to update email')).catch(() => {});
   }
 }
 

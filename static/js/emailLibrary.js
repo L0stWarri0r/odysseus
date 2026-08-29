@@ -15,6 +15,7 @@ import {
   _sanitizeHtml,
   _TALON_WROTE, _TALON_FROM, _TALON_SENT, _TALON_SUBJ, _TALON_TO,
   _TALON_ORIG_RE, _SIG_BLOAT_MIN_CHARS,
+  assertEmailWriteOk,
 } from './emailLibrary/utils.js';
 import {
   _looksLikeSignature, _harvestAttribution, _extractTurnMetaFromBlockquote,
@@ -494,10 +495,11 @@ async function _deleteEmailAndAdvance(em, card, opts = {}) {
     : null;
   const nextUid = sibling ? sibling.dataset.uid : null;
   try {
-    await fetch(`${API_BASE}/api/email/delete/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
+    const res = await fetch(`${API_BASE}/api/email/delete/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
+    await assertEmailWriteOk(res);
   } catch (err) {
     console.error('Failed to delete email:', err);
-    showToast('Failed to delete email');
+    showToast(err.message || 'Failed to delete email');
     return;
   }
   await _animateEmailCardRemoval([em.uid]);
@@ -991,6 +993,9 @@ export function openEmailLibrary(opts = {}) {
         credentials: 'same-origin',
       });
       const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
       showToast(`Deleted ${data.deleted || 0} reminder email${(data.deleted || 0) === 1 ? '' : 's'}`);
       if ((data.deleted || 0) > 0) {
         const visibleUids = Array.from(document.querySelectorAll('#email-lib-grid .doclib-card[data-uid]'))
@@ -1967,12 +1972,20 @@ function _createCard(em) {
       }
       try {
         if (newState) {
-          await fetch(`${API_BASE}/api/email/mark-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
-          await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          const answered = await fetch(`${API_BASE}/api/email/mark-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          await assertEmailWriteOk(answered);
+          const read = await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          await assertEmailWriteOk(read);
         } else {
-          await fetch(`${API_BASE}/api/email/clear-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          const cleared = await fetch(`${API_BASE}/api/email/clear-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          await assertEmailWriteOk(cleared);
         }
-      } catch (err) { console.error(err); }
+      } catch (err) {
+        console.error(err);
+        em.is_answered = !newState;
+        doneCheck.classList.toggle('active', !newState);
+        showToast(err.message || 'Failed to update email');
+      }
     };
     doneCheck.addEventListener('click', _toggleDone);
     titleRow.appendChild(doneCheck);
@@ -2202,7 +2215,11 @@ async function _toggleCardPreview(card, em) {
   if (!em.is_read) {
     _syncEmailReadState(em.uid, true);
     fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(folderAtStart)}${_acct()}`, { method: 'POST' })
-      .catch(err => console.error('Failed to mark email read:', err));
+      .then(assertEmailWriteOk)
+      .catch(err => {
+        console.error('Failed to mark email read:', err);
+        _syncEmailReadState(em.uid, false);
+      });
   }
   // Class hook on the modal so the header-hide / padding rules work on
   // browsers without :has() support (Firefox mobile) — the :has() versions
@@ -4533,11 +4550,17 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
         _syncEmailReadState(em.uid, newRead);
         try {
           if (newRead) {
-            await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            const res = await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            await assertEmailWriteOk(res);
           } else {
-            await fetch(`${API_BASE}/api/email/mark-unread/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            const res = await fetch(`${API_BASE}/api/email/mark-unread/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            await assertEmailWriteOk(res);
           }
-        } catch (e) { console.error(e); }
+        } catch (e) {
+          console.error(e);
+          _syncEmailReadState(em.uid, !newRead);
+          showToast(e.message || 'Failed to update email');
+        }
         _renderGrid();
       },
     },
@@ -4550,12 +4573,19 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
         if (newState) _syncEmailReadState(em.uid, true);
         try {
           if (newState) {
-            await fetch(`${API_BASE}/api/email/mark-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
-            await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            const answered = await fetch(`${API_BASE}/api/email/mark-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            await assertEmailWriteOk(answered);
+            const read = await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            await assertEmailWriteOk(read);
           } else {
-            await fetch(`${API_BASE}/api/email/clear-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            const cleared = await fetch(`${API_BASE}/api/email/clear-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            await assertEmailWriteOk(cleared);
           }
-        } catch (e) { console.error('Failed to toggle done:', e); }
+        } catch (e) {
+          console.error('Failed to toggle done:', e);
+          em.is_answered = !newState;
+          showToast(e.message || 'Failed to update email');
+        }
         _renderGrid();
       },
     },
@@ -4564,8 +4594,13 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
       icon: _archIcon,
       action: async () => {
         try {
-          await fetch(`${API_BASE}/api/email/archive/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
-        } catch (e) { console.error(e); }
+          const res = await fetch(`${API_BASE}/api/email/archive/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          await assertEmailWriteOk(res);
+        } catch (e) {
+          console.error(e);
+          showToast(e.message || 'Failed to archive email');
+          return;
+        }
         await closeAndRemove();
       },
     },
@@ -4579,8 +4614,13 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
       icon: _spamIcon,
       action: async () => {
         try {
-          await fetch(`${API_BASE}/api/email/move/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}&dest=Junk`, { method: 'POST' });
-        } catch (e) { console.error(e); }
+          const res = await fetch(`${API_BASE}/api/email/move/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}&dest=Junk`, { method: 'POST' });
+          await assertEmailWriteOk(res);
+        } catch (e) {
+          console.error(e);
+          showToast(e.message || 'Failed to move email');
+          return;
+        }
         await closeAndRemove();
       },
     },
@@ -4589,8 +4629,13 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
       icon: _trashIcon,
       action: async () => {
         try {
-          await fetch(`${API_BASE}/api/email/delete/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
-        } catch (e) { console.error(e); }
+          const res = await fetch(`${API_BASE}/api/email/delete/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
+          await assertEmailWriteOk(res);
+        } catch (e) {
+          console.error(e);
+          showToast(e.message || 'Failed to delete email');
+          return;
+        }
         await closeAndRemove();
       },
     },
@@ -4606,8 +4651,13 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
         );
         if (!ok) return;
         try {
-          await fetch(`${API_BASE}/api/email/delete-permanent/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
-        } catch (e) { console.error(e); }
+          const res = await fetch(`${API_BASE}/api/email/delete-permanent/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
+          await assertEmailWriteOk(res);
+        } catch (e) {
+          console.error(e);
+          showToast(e.message || 'Failed to delete email');
+          return;
+        }
         await closeAndRemove();
       },
     },
@@ -4711,12 +4761,20 @@ function _showCardMenu(em, anchor) {
         if (newState) _syncEmailReadState(em.uid, true); // mark-done implies mark-read
         try {
           if (newState) {
-            await fetch(`${API_BASE}/api/email/mark-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
-            await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            const answered = await fetch(`${API_BASE}/api/email/mark-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            await assertEmailWriteOk(answered);
+            const read = await fetch(`${API_BASE}/api/email/mark-read/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            await assertEmailWriteOk(read);
           } else {
-            await fetch(`${API_BASE}/api/email/clear-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            const cleared = await fetch(`${API_BASE}/api/email/clear-answered/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+            await assertEmailWriteOk(cleared);
           }
-        } catch (e) { console.error('Failed to toggle done:', e); }
+        } catch (e) {
+          console.error('Failed to toggle done:', e);
+          em.is_answered = !newState;
+          showToast(e.message || 'Failed to update email');
+          return;
+        }
         if (card) {
           if (check) check.classList.toggle('active', newState);
           if (newState) _syncEmailReadState(em.uid, true);
@@ -4727,7 +4785,14 @@ function _showCardMenu(em, anchor) {
       label: 'Archive',
       icon: _archIcon,
       action: async () => {
-        await fetch(`${API_BASE}/api/email/archive/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+        try {
+          const res = await fetch(`${API_BASE}/api/email/archive/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          await assertEmailWriteOk(res);
+        } catch (e) {
+          console.error(e);
+          showToast(e.message || 'Failed to archive email');
+          return;
+        }
         await _animateEmailCardRemoval([em.uid]);
         state._libEmails = state._libEmails.filter(e => String(e.uid) !== String(em.uid));
         _renderGrid();
@@ -4739,7 +4804,14 @@ function _showCardMenu(em, anchor) {
       label: 'Archive',
       icon: _archIcon,
       action: async () => {
-        await fetch(`${API_BASE}/api/email/archive/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+        try {
+          const res = await fetch(`${API_BASE}/api/email/archive/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          await assertEmailWriteOk(res);
+        } catch (e) {
+          console.error(e);
+          showToast(e.message || 'Failed to archive email');
+          return;
+        }
         await _animateEmailCardRemoval([em.uid]);
         state._libEmails = state._libEmails.filter(e => String(e.uid) !== String(em.uid));
         _renderGrid();
@@ -4770,7 +4842,14 @@ function _showCardMenu(em, anchor) {
       const subject = em.subject || '(no subject)';
       const ok = await styledConfirm(`Delete "${subject}"?`, { confirmText: 'Delete', cancelText: 'Cancel', danger: true });
       if (!ok) return;
-      await fetch(`${API_BASE}/api/email/delete/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
+      try {
+        const res = await fetch(`${API_BASE}/api/email/delete/${em.uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
+        await assertEmailWriteOk(res);
+      } catch (e) {
+        console.error(e);
+        showToast(e.message || 'Failed to delete email');
+        return;
+      }
       await _animateEmailCardRemoval([em.uid]);
       state._libEmails = state._libEmails.filter(e => String(e.uid) !== String(em.uid));
       _renderGrid();
@@ -4892,7 +4971,8 @@ function _updateBulkBar() {
 async function _bulkAction(action) {
   const uids = Array.from(state._selectedUids);
   if (uids.length === 0) return;
-  let failedReadSync = 0;
+  let failedWrites = 0;
+  const succeeded = [];
   if (action === 'delete') {
     const ok = await styledConfirm(
       `Delete ${uids.length} selected email${uids.length === 1 ? '' : 's'}?`,
@@ -4930,36 +5010,38 @@ async function _bulkAction(action) {
     for (const uid of uids) {
       try {
         if (action === 'archive') {
-          await fetch(`${API_BASE}/api/email/archive/${uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          const res = await fetch(`${API_BASE}/api/email/archive/${uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          await assertEmailWriteOk(res);
+          succeeded.push(uid);
         } else if (action === 'delete') {
-          await fetch(`${API_BASE}/api/email/delete/${uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
+          const res = await fetch(`${API_BASE}/api/email/delete/${uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'DELETE' });
+          await assertEmailWriteOk(res);
+          succeeded.push(uid);
         } else if (action === 'done') {
           const em = state._libEmails.find(e => e.uid === uid);
+          const answered = await fetch(`${API_BASE}/api/email/mark-answered/${uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          await assertEmailWriteOk(answered);
+          const read = await fetch(`${API_BASE}/api/email/mark-read/${uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
+          await assertEmailWriteOk(read);
           if (em) {
             em.is_answered = true;
             em.is_read = true;
           }
-          await fetch(`${API_BASE}/api/email/mark-answered/${uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
-          await fetch(`${API_BASE}/api/email/mark-read/${uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
         } else if (action === 'read' || action === 'unread') {
           const endpoint = action === 'read' ? 'mark-read' : 'mark-unread';
           const res = await fetch(`${API_BASE}/api/email/${endpoint}/${uid}?folder=${encodeURIComponent(state._libFolder)}${_acct()}`, { method: 'POST' });
-          let data = null;
-          try { data = await res.json(); } catch (_) {}
-          if (!res.ok || data?.success === false) {
-            throw new Error(data?.error || `HTTP ${res.status}`);
-          }
+          await assertEmailWriteOk(res);
           _syncEmailReadState(uid, action === 'read');
         }
       } catch (e) {
-        if (action === 'read' || action === 'unread') failedReadSync += 1;
+        failedWrites += 1;
         console.error(`Failed to ${action} ${uid}:`, e);
       }
     }
 
-    if (action === 'archive' || action === 'delete') {
-      await _animateEmailCardRemoval(uids);
-      const removed = new Set(uids.map(uid => String(uid)));
+    if ((action === 'archive' || action === 'delete') && succeeded.length) {
+      await _animateEmailCardRemoval(succeeded);
+      const removed = new Set(succeeded.map(uid => String(uid)));
       state._libEmails = state._libEmails.filter(e => !removed.has(String(e.uid)));
     }
   } finally {
@@ -4978,8 +5060,8 @@ async function _bulkAction(action) {
   state._selectMode = false;
   _updateBulkBar();
   _renderGrid();
-  if (failedReadSync > 0) {
-    showToast(`Failed to update ${failedReadSync} email${failedReadSync === 1 ? '' : 's'}`);
+  if (failedWrites > 0) {
+    showToast(`Failed to update ${failedWrites} email${failedWrites === 1 ? '' : 's'}`);
   }
   // Sync successful local mutations into the SWR cache so reopen doesn't
   // briefly show the pre-bulk state.

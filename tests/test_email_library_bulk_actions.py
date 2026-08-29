@@ -31,6 +31,5 @@ def test_email_bulk_read_unread_calls_provider_write_routes():
 def test_email_bulk_read_unread_checks_backend_success_before_syncing_cache():
     src = _bulk_action_source()
 
-    assert "data?.success === false" in src
-    assert "throw new Error(data?.error" in src
-    assert "_libCacheWriteBack()" in src
+    assert "assertEmailWriteOk" in src
+    assert "_syncEmailReadState(uid, action === 'read')" in src

@@ -36,7 +36,7 @@ from fastapi.responses import FileResponse
 from src.llm_core import llm_call_async
 
 from routes.email_helpers import (
-    _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account,
+    _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account, mail_error,
     _q, _attach_compose_uploads, _cleanup_compose_uploads,
     _load_settings, _save_settings, _get_email_config,
     _send_smtp_message, _smtp_security_mode,
@@ -1680,12 +1680,14 @@ def setup_email_routes():
             with _imap(account_id, owner=owner) as conn:
                 conn.select(_q(folder))
                 if not _store_email_flag(conn, uid, "\\Seen", add=False):
-                    return {"success": False, "error": "Email not found"}
+                    return mail_error("Email not found", 404)
             _invalidate_list_cache(account_id, folder)
             return {"success": True}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to mark unread {uid}: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/mark-read/{uid}")
     async def mark_read(uid: str, folder: str = Query("INBOX"), account_id: str | None = Query(None), owner: str = Depends(require_owner)):
@@ -1694,12 +1696,14 @@ def setup_email_routes():
             with _imap(account_id, owner=owner) as conn:
                 conn.select(_q(folder))
                 if not _store_email_flag(conn, uid, "\\Seen", add=True):
-                    return {"success": False, "error": "Email not found"}
+                    return mail_error("Email not found", 404)
             _invalidate_list_cache(account_id, folder)
             return {"success": True}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to mark read {uid}: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/archive/{uid}")
     async def archive_email(uid: str, folder: str = Query("INBOX"), account_id: str | None = Query(None), owner: str = Depends(require_owner)):
@@ -1708,12 +1712,14 @@ def setup_email_routes():
             with _imap(account_id, owner=owner) as conn:
                 conn.select(_q(folder))
                 if not _move_email_message(conn, uid, "Archive", role="archive"):
-                    return {"success": False, "error": "Email not found"}
+                    return mail_error("Email not found", 404)
             _invalidate_list_cache(account_id)
             return {"success": True}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to archive email {uid}: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.delete("/delete/{uid}")
     async def delete_email(uid: str, folder: str = Query("INBOX"), account_id: str | None = Query(None), owner: str = Depends(require_owner)):
@@ -1722,12 +1728,14 @@ def setup_email_routes():
             with _imap(account_id, owner=owner) as conn:
                 conn.select(_q(folder))
                 if not _move_email_message(conn, uid, "Trash", role="trash"):
-                    return {"success": False, "error": "Email not found"}
+                    return mail_error("Email not found", 404)
             _invalidate_list_cache(account_id)
             return {"success": True}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to delete email {uid}: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.delete("/delete-permanent/{uid}")
     async def delete_email_permanent(uid: str, folder: str = Query("INBOX"), account_id: str | None = Query(None), owner: str = Depends(require_owner)):
@@ -1736,13 +1744,15 @@ def setup_email_routes():
             with _imap(account_id, owner=owner) as conn:
                 conn.select(_q(folder))
                 if not _store_email_flag(conn, uid, "\\Deleted", add=True):
-                    return {"success": False, "error": "Email not found"}
+                    return mail_error("Email not found", 404)
                 conn.expunge()
             _invalidate_list_cache(account_id, folder)
             return {"success": True}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to permanently delete email {uid}: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.delete("/odysseus/reminders")
     async def delete_odysseus_reminder_emails(
@@ -1815,9 +1825,11 @@ def setup_email_routes():
                         logger.warning(f"Skipped reminder cleanup in {folder_name!r}: {e}")
             _invalidate_list_cache(account_id)
             return {"success": True, "deleted": deleted, "folders_checked": folders_checked}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"delete_odysseus_reminder_emails failed: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/move/{uid}")
     async def move_email(uid: str, folder: str = Query("INBOX"), dest: str = Query(...), account_id: str | None = Query(None), owner: str = Depends(require_owner)):
@@ -1826,12 +1838,14 @@ def setup_email_routes():
             with _imap(account_id, owner=owner) as conn:
                 conn.select(_q(folder))
                 if not _move_email_message(conn, uid, dest):
-                    return {"success": False, "error": f"Failed to move to {dest}"}
+                    return mail_error(f"Failed to move to {dest}")
             _invalidate_list_cache(account_id)
             return {"success": True}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to move email {uid} to {dest}: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.get("/folders")
     async def list_folders(account_id: str | None = Query(None), owner: str = Depends(require_owner)):
@@ -1858,11 +1872,13 @@ def setup_email_routes():
             with _imap(account_id, owner=owner) as conn:
                 conn.select(_q(folder))
                 if not _store_email_flag(conn, uid, "\\Answered", add=True):
-                    return {"success": False, "error": "Email not found"}
+                    return mail_error("Email not found", 404)
             return {"success": True}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to mark answered {uid}: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/clear-answered/{uid}")
     async def clear_answered(uid: str, folder: str = Query("INBOX"), account_id: str | None = Query(None), owner: str = Depends(require_owner)):
@@ -1871,11 +1887,13 @@ def setup_email_routes():
             with _imap(account_id, owner=owner) as conn:
                 conn.select(_q(folder))
                 if not _store_email_flag(conn, uid, "\\Answered", add=False):
-                    return {"success": False, "error": "Email not found"}
+                    return mail_error("Email not found", 404)
             return {"success": True}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to clear answered {uid}: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/compose-upload")
     async def compose_upload(file: UploadFile = File(...), owner: str = Depends(require_owner)):
