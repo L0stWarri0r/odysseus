@@ -29,6 +29,7 @@ import mimetypes
 from pathlib import Path
 
 from fastapi import Query, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -207,6 +208,21 @@ def _assert_owns_account(account_id: str, owner: str) -> None:
         # through. 503 tells the caller to retry; logs preserve detail.
         logger.error(f"Account-owner check failed: {e}")
         raise HTTPException(503, "Account check failed")
+
+
+def mail_error(message: str, status_code: int = 502) -> JSONResponse:
+    """Return a mail-mutation failure without disguising it as HTTP 200.
+
+    The JSON body stays `{success: false, error}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    (the inbox/library archive+delete paths) can now tell the IMAP write
+    actually failed instead of removing the message from the UI.
+    """
+    return JSONResponse(
+        {"success": False, "error": message},
+        status_code=status_code,
+    )
+
 
 def _q(name: str) -> str:
     """Quote an IMAP mailbox name. Defensive: escapes `\\` and `"` and wraps

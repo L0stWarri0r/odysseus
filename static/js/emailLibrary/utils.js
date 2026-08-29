@@ -200,3 +200,12 @@ export function _sanitizeHtml(html) {
 
   return doc.body.innerHTML;
 }
+
+export async function assertEmailWriteOk(res) {
+  let data = null;
+  try { data = await res.json(); } catch (_) {}
+  if (!res.ok || data?.success === false) {
+    throw new Error((data && data.error) || `HTTP ${res.status}`);
+  }
+  return data;
+}
