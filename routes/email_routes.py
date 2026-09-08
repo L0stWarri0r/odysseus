@@ -36,7 +36,7 @@ from fastapi.responses import FileResponse
 from src.llm_core import llm_call_async
 
 from routes.email_helpers import (
-    _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account,
+    _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account, mail_error,
     _q, _attach_compose_uploads, _cleanup_compose_uploads,
     _load_settings, _save_settings, _get_email_config,
     _send_smtp_message, _smtp_security_mode,
@@ -1847,9 +1847,11 @@ def setup_email_routes():
                     name = match.group(1) or match.group(2)
                     result.append(name)
             return {"folders": result}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"list_folders failed: {e}")
-            return {"folders": [], "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/mark-answered/{uid}")
     async def mark_answered(uid: str, folder: str = Query("INBOX"), account_id: str | None = Query(None), owner: str = Depends(require_owner)):
@@ -1971,7 +1973,7 @@ def setup_email_routes():
         try:
             send_at = req.get("send_at")
             if not send_at:
-                return {"success": False, "error": "send_at required (ISO8601 UTC)"}
+                return mail_error("send_at required (ISO8601 UTC)", 400)
             # Body-based account_id — dep can't see it, check here.
             _acct = req.get("account_id")
             if _acct:
@@ -1979,16 +1981,17 @@ def setup_email_routes():
             # Validate parseable + reject past times (the poller fires
             # anything in the past immediately on the next tick — a
             # 1970-dated schedule would deliver right now).
-            from datetime import datetime as _dt, timezone as _tz
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
             try:
                 parsed_at = _dt.fromisoformat(send_at.replace("Z", "+00:00"))
             except ValueError:
-                return {"success": False, "error": "send_at must be ISO8601"}
+                return mail_error("send_at must be ISO8601", 400)
             now_utc = _dt.now(_tz.utc) if parsed_at.tzinfo else _dt.utcnow()
             # Tiny 30s grace so a user clicking Send right at the chosen
-            # minute doesn't trip the past-time guard.
-            if parsed_at < now_utc:
-                return {"success": False, "error": "send_at must be in the future"}
+            # minute doesn't trip the past-time guard. datetime-local is
+            # minute-precision, so "this minute" is often a few seconds ago.
+            if parsed_at < now_utc - _td(seconds=30):
+                return mail_error("send_at must be in the future", 400)
             # Normalize to naive UTC before storing: the poller selects due
             # rows with a lexicographic string compare against a naive
             # datetime.utcnow().isoformat(), so storing the raw client string
@@ -2025,9 +2028,11 @@ def setup_email_routes():
             conn.close()
             logger.info(f"Scheduled email {sid} for {send_at}")
             return {"success": True, "id": sid, "send_at": send_at}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to schedule email: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.get("/scheduled")
     async def list_scheduled(owner: str = Depends(require_owner)):
@@ -2048,9 +2053,11 @@ def setup_email_routes():
                     "send_at": r[4], "created_at": r[5], "status": r[6], "error": r[7],
                 } for r in rows
             ]}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"list_scheduled failed: {e}")
-            return {"scheduled": [], "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.delete("/scheduled/{sid}")
     async def cancel_scheduled(sid: str, owner: str = Depends(require_owner)):
@@ -2058,16 +2065,21 @@ def setup_email_routes():
         import sqlite3
         try:
             conn = sqlite3.connect(SCHEDULED_DB)
-            conn.execute(
+            cur = conn.execute(
                 "DELETE FROM scheduled_emails WHERE id = ? AND status = 'pending' AND owner = ?",
                 (sid, owner or ""),
             )
+            deleted = cur.rowcount
             conn.commit()
             conn.close()
+            if deleted == 0:
+                return mail_error("Scheduled email not found", 404)
             return {"success": True}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"cancel_scheduled {sid!r} failed: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.get("/resolve-contact")
     async def resolve_contact(name: str = Query(..., description="Name to search for"), owner: str = Depends(require_owner)):
