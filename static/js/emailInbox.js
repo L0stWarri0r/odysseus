@@ -334,7 +334,11 @@ export async function loadEmails(append = false) {
 async function loadFolders() {
   try {
     const res = await fetch(`${API_BASE}/api/email/folders?_=1${_acct()}`);
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      console.error('Failed to load folders:', data.error || `HTTP ${res.status}`);
+      return;
+    }
     const select = document.getElementById('email-folder-select');
     if (!select || !data.folders) return;
     _populateFolderSelect(select, data.folders);

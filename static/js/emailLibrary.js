@@ -1450,8 +1450,9 @@ async function _loadFolders({ resetMissing = false } = {}) {
   const accountAtStart = state._libAccountId || '';
   try {
     const res = await fetch(`${API_BASE}/api/email/folders?_=${Date.now()}${_acct()}`);
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (seq !== _libFolderSeq || accountAtStart !== (state._libAccountId || '')) return;
+    if (!res.ok || data.error) return;
     const sel = document.getElementById('email-lib-folder');
     if (!sel || !data.folders) return;
     state._libFolders = data.folders;
@@ -1720,8 +1721,13 @@ async function _loadEmails({ force = false, useCache = true } = {}) {
 
 async function _loadScheduled(grid, sp) {
   const res = await fetch(`${API_BASE}/api/email/scheduled`);
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
   if (sp) sp.destroy();
+  if (!res.ok || data.error) {
+    const msg = data.error || `Failed to load scheduled emails (${res.status})`;
+    grid.innerHTML = `<div class="email-loading">${_esc(msg)}</div>`;
+    return;
+  }
   const items = data.scheduled || [];
   grid.innerHTML = '';
   const stats = document.getElementById('email-lib-stats');
@@ -1769,9 +1775,16 @@ async function _loadScheduled(grid, sp) {
       const ok = await styledConfirm(`Cancel scheduled email "${subject}"?`, { confirmText: 'Cancel Send', cancelText: 'Keep', danger: true });
       if (!ok) return;
       try {
-        await fetch(`${API_BASE}/api/email/scheduled/${it.id}`, { method: 'DELETE' });
+        const res = await fetch(`${API_BASE}/api/email/scheduled/${it.id}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.success === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
         _loadEmails();
-      } catch (err) { console.error(err); }
+      } catch (err) {
+        console.error(err);
+        showToast(err.message || 'Failed to cancel scheduled email');
+      }
     });
     const actionsWrap = document.createElement('div');
     actionsWrap.className = 'memory-item-actions';
