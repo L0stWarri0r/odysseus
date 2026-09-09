@@ -234,6 +234,10 @@ _PER_USER_KEYS = {
     "default_endpoint_id", "default_model", "default_model_fallbacks",
     "utility_endpoint_id", "utility_model", "utility_model_fallbacks",
     "research_endpoint_id", "research_model",
+    # Email writing style is a personal mimic-prompt (greeting, sign-off,
+    # voice). It must not live as a single global settings.json key or
+    # one user extracting style overwrites everyone else's AI replies.
+    "email_writing_style",
 }
 
 

@@ -37,6 +37,7 @@ from src.llm_core import llm_call_async
 
 from routes.email_helpers import (
     _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account,
+    _writing_style_for_owner, _save_writing_style_for_owner,
     _q, _attach_compose_uploads, _cleanup_compose_uploads,
     _load_settings, _save_settings, _get_email_config,
     _send_smtp_message, _smtp_security_mode,
@@ -2437,10 +2438,7 @@ def setup_email_routes():
             if not style:
                 return {"success": False, "error": "LLM failed to generate style description"}
 
-            # Save to settings
-            settings = _load_settings()
-            settings["email_writing_style"] = style
-            _save_settings(settings)
+            _save_writing_style_for_owner(owner, style)
 
             logger.info("Writing style extracted and saved")
             return {"success": True, "style": style}
@@ -2606,8 +2604,7 @@ def setup_email_routes():
                 except Exception as e:
                     logger.warning(f"AI reply cache lookup failed: {e}")
 
-            settings = _load_settings()
-            style = settings.get("email_writing_style", "")
+            style = _writing_style_for_owner(owner)
 
             # Try session's endpoint first if session_id provided
             url = None
@@ -2808,16 +2805,13 @@ def setup_email_routes():
 
     @router.get("/style")
     async def get_writing_style(owner: str = Depends(require_user)):
-        """Get the current writing style prompt."""
-        settings = _load_settings()
-        return {"style": settings.get("email_writing_style", "")}
+        """Get the current writing style prompt for this user."""
+        return {"style": _writing_style_for_owner(owner)}
 
     @router.put("/style")
     async def update_writing_style(data: dict, owner: str = Depends(require_user)):
-        """Manually update the writing style prompt."""
-        settings = _load_settings()
-        settings["email_writing_style"] = data.get("style", "")
-        _save_settings(settings)
+        """Manually update this user's writing style prompt."""
+        _save_writing_style_for_owner(owner, data.get("style", "") or "")
         return {"success": True}
 
     @router.get("/config")

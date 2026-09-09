@@ -493,7 +493,9 @@ async def action_summarize_emails(owner: str, **kwargs) -> Tuple[str, bool]:
     """Run one pass of email summary background processing."""
     try:
         from routes.email_pollers import _run_auto_summarize_once
-        result = await _run_auto_summarize_once(do_summary=True, do_reply=False)
+        result = await _run_auto_summarize_once(
+            do_summary=True, do_reply=False, owner=owner or "",
+        )
         if not _result_has_work(result):
             raise TaskNoop(f"summarize: {result or 'no new emails'}")
         return result, True
@@ -511,6 +513,7 @@ async def action_draft_email_replies(owner: str, **kwargs) -> Tuple[str, bool]:
             do_reply=True,
             days_back=7,
             progress_cb=kwargs.get("progress_cb"),
+            owner=owner or "",
         )
         if not _result_has_work(result):
             raise TaskNoop(f"draft replies: {result or 'no new emails'}")
@@ -747,6 +750,7 @@ async def action_extract_email_events(owner: str, **kwargs) -> Tuple[str, bool]:
             result = await _aio.wait_for(
                 _run_auto_summarize_once(
                     do_summary=False, do_reply=False, do_calendar=True, days_back=3,
+                    owner=owner or "",
                 ),
                 timeout=300,
             )
