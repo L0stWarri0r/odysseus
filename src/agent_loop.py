@@ -775,8 +775,8 @@ def _build_system_prompt(
         _inject_style = any(tok in _last_user_text for tok in ("email", "mail", "reply", "send", "inbox"))
     if _inject_style:
         try:
-            from src.settings import load_settings as _load_settings
-            _style = (_load_settings().get("email_writing_style", "") or "").strip()
+            from src.settings import get_user_setting as _get_user_setting
+            _style = (_get_user_setting("email_writing_style", owner or "", "") or "").strip()
             if _style:
                 agent_prompt += (
                     "\n\n📧 EMAIL WRITING STYLE AND IDENTITY — FOLLOW FOR ANY EMAIL DRAFT OR SEND:\n"

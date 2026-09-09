@@ -32,7 +32,8 @@ from email.mime.multipart import MIMEMultipart
 from src.llm_core import llm_call_async
 
 from routes.email_helpers import (
-    _strip_think, _extract_reply, _apply_email_style_mechanics, _load_settings, _save_settings, _get_email_config,
+    _strip_think, _extract_reply, _apply_email_style_mechanics, _load_settings, _get_email_config,
+    _writing_style_for_owner, _email_account_visible_to_owner,
     _send_smtp_message,
     _imap_connect, _imap, _decode_header,
     _detect_sent_folder, _detect_spam_folder, _imap_move,
@@ -77,26 +78,58 @@ async def _run_auto_summarize_once(do_summary: bool = True, do_reply: bool = Tru
                                    do_tag: bool = False, do_spam: bool = False,
                                    do_calendar: bool = False,
                                    days_back: int = 1,
-                                   progress_cb=None) -> str:
-    """One iteration of the email scan. Temporarily flips settings flags
-    so the existing background-loop logic runs exactly once for the requested ops."""
-    settings = _load_settings()
-    prev = {k: settings.get(k, False) for k in
-            ("email_auto_summarize", "email_auto_reply", "email_auto_tag",
-             "email_auto_spam", "email_auto_calendar")}
-    settings["email_auto_summarize"] = bool(do_summary)
-    settings["email_auto_reply"] = bool(do_reply)
-    settings["email_auto_tag"] = bool(do_tag)
-    settings["email_auto_spam"] = bool(do_spam)
-    settings["email_auto_calendar"] = bool(do_calendar)
-    _save_settings(settings)
+                                   progress_cb=None,
+                                   owner: str = "",
+                                   account_id: str | None = None) -> str:
+    """One iteration of the email scan for `owner`'s mailboxes.
+
+    Flags are passed as in-memory overrides. They must not be written to
+    settings.json: that raced concurrent tasks and applied one user's
+    one-shot run (summarize / draft replies / extract events) to every
+    enabled account on the host.
+    """
+    flag_overrides = {
+        "email_auto_summarize": bool(do_summary),
+        "email_auto_reply": bool(do_reply),
+        "email_auto_tag": bool(do_tag),
+        "email_auto_spam": bool(do_spam),
+        "email_auto_calendar": bool(do_calendar),
+    }
+    return await _auto_summarize_pass(
+        days_back=days_back,
+        progress_cb=progress_cb,
+        account_id=account_id,
+        owner=owner,
+        flag_overrides=flag_overrides,
+    )
+
+
+def _enabled_email_accounts(owner: str = "") -> list[tuple[str, str]]:
+    """Return ``(id, name)`` for enabled accounts visible to ``owner``."""
     try:
-        return await _auto_summarize_pass(days_back=days_back, progress_cb=progress_cb)
-    finally:
-        s2 = _load_settings()
-        for k, v in prev.items():
-            s2[k] = v
-        _save_settings(s2)
+        from core.database import SessionLocal as _SL, EmailAccount as _EA
+        db = _SL()
+        try:
+            rows = (
+                db.query(_EA)
+                .filter(_EA.enabled == True)  # noqa: E712
+                .order_by(_EA.is_default.desc(), _EA.created_at.asc())
+                .all()
+            )
+            out = []
+            for row in rows:
+                if _email_account_visible_to_owner(
+                    owner,
+                    account_owner=row.owner or "",
+                    imap_user=row.imap_user or "",
+                    from_address=row.from_address or "",
+                ):
+                    out.append((row.id, row.name or row.id[:8]))
+            return out
+        finally:
+            db.close()
+    except Exception:
+        return []
 
 
 def _latest_inbox_fallback_uids(conn, reconnect):
@@ -129,50 +162,64 @@ def _latest_inbox_fallback_uids(conn, reconnect):
         return [], reconnect()
 
 
-async def _auto_summarize_pass(days_back: int = 1, account_id: str | None = None, progress_cb=None) -> str:
+async def _auto_summarize_pass(days_back: int = 1, account_id: str | None = None,
+                               progress_cb=None, owner: str = "",
+                               flag_overrides: dict | None = None) -> str:
     """Single pass of the auto-summarize/reply scan.
 
-    When account_id is None, iterates over every enabled account in
-    email_accounts and runs one pass per account, concatenating the results.
+    When account_id is None, iterates over enabled accounts visible to
+    `owner` (every account in unconfigured single-user mode) and runs one
+    pass per account, concatenating the results.
     """
-    # Multi-account fan-out: if the caller didn't pick an account, hit them all.
+    extra = {"flag_overrides": flag_overrides} if flag_overrides is not None else {}
+    # Multi-account fan-out: if the caller didn't pick an account, hit the
+    # ones this owner is allowed to see — not every mailbox on the host.
     if account_id is None:
-        try:
-            from core.database import SessionLocal as _SL, EmailAccount as _EA
-            db = _SL()
-            try:
-                rows = (
-                    db.query(_EA)
-                    .filter(_EA.enabled == True)  # noqa: E712
-                    .order_by(_EA.is_default.desc(), _EA.created_at.asc())
-                    .all()
-                )
-                ids = [r.id for r in rows]
-                names = {r.id: r.name for r in rows}
-            finally:
-                db.close()
-        except Exception:
-            ids = []
-            names = {}
+        pairs = _enabled_email_accounts(owner)
+        ids = [p[0] for p in pairs]
+        names = {p[0]: p[1] for p in pairs}
+        if owner and not ids:
+            return "No email accounts"
         if len(ids) <= 1:
-            # Single-account (or zero rows — fallback to legacy settings.json lookup)
-            return await _auto_summarize_pass_single(days_back=days_back, account_id=(ids[0] if ids else None), progress_cb=progress_cb)
+            # Single-account (or zero rows in single-user mode — fallback
+            # to legacy settings.json lookup)
+            return await _auto_summarize_pass_single(
+                days_back=days_back,
+                account_id=(ids[0] if ids else None),
+                progress_cb=progress_cb,
+                **extra,
+            )
         outs = []
         for idx, aid in enumerate(ids, start=1):
             try:
                 await _emit_progress(progress_cb, f"{names.get(aid, aid[:8])}: starting ({idx}/{len(ids)})")
-                result = await _auto_summarize_pass_single(days_back=days_back, account_id=aid, progress_cb=progress_cb)
+                result = await _auto_summarize_pass_single(
+                    days_back=days_back,
+                    account_id=aid,
+                    progress_cb=progress_cb,
+                    **extra,
+                )
                 outs.append(f"[{names.get(aid, aid[:8])}] {result}")
             except Exception as e:
                 logger.warning(f"auto-summarize pass failed for account {aid}: {e}")
                 outs.append(f"[{names.get(aid, aid[:8])}] error: {e}")
         return "\n".join(outs)
-    return await _auto_summarize_pass_single(days_back=days_back, account_id=account_id, progress_cb=progress_cb)
+    return await _auto_summarize_pass_single(
+        days_back=days_back,
+        account_id=account_id,
+        progress_cb=progress_cb,
+        **extra,
+    )
 
 
-async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None = None, progress_cb=None) -> str:
+async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None = None,
+                                      progress_cb=None, flag_overrides: dict | None = None) -> str:
     """Single pass of the auto-summarize/reply scan for ONE account.
-    Reads current settings flags."""
+
+    `flag_overrides` (from a one-shot task) win over settings.json so a
+    user's scheduled summarize/reply/calendar run does not have to mutate
+    the global Email settings flags.
+    """
     import asyncio
     import sqlite3 as _sql3
     import requests as _req
@@ -180,11 +227,14 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
     from src.llm_core import _uses_max_completion_tokens, _restricts_temperature
 
     settings = _load_settings()
-    auto_sum = settings.get("email_auto_summarize", False)
-    auto_reply = settings.get("email_auto_reply", False)
-    auto_tag = settings.get("email_auto_tag", False)
-    auto_spam = settings.get("email_auto_spam", False)
-    auto_cal = settings.get("email_auto_calendar", False)
+    flags = dict(settings)
+    if flag_overrides:
+        flags.update(flag_overrides)
+    auto_sum = flags.get("email_auto_summarize", False)
+    auto_reply = flags.get("email_auto_reply", False)
+    auto_tag = flags.get("email_auto_tag", False)
+    auto_spam = flags.get("email_auto_spam", False)
+    auto_cal = flags.get("email_auto_calendar", False)
     if not auto_sum and not auto_reply and not auto_tag and not auto_spam and not auto_cal:
         return "Nothing to do"
 
@@ -278,7 +328,7 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
         if not url or not model:
             return "No model configured"
 
-        writing_style = settings.get("email_writing_style", "")
+        writing_style = _writing_style_for_owner(account_owner)
         processed = 0
         already_cached = 0
         too_short = 0
@@ -320,7 +370,7 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                 need_sum = auto_sum and message_id not in _sum_existing
                 need_reply = auto_reply and message_id not in _reply_existing
                 need_class = (auto_tag or auto_spam) and message_id not in _tag_existing
-                need_cal = bool(settings.get("email_auto_calendar", False)) and message_id not in _cal_existing
+                need_cal = bool(auto_cal) and message_id not in _cal_existing
                 # Only check urgency on INBOX (received mail), not Sent
                 # Skip messages that are themselves urgency alerts, or that
                 # we sent to ourselves — otherwise the alert loop re-flags

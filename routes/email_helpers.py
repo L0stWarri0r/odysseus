@@ -507,6 +507,64 @@ def _save_settings(settings):
     atomic_write_json(str(SETTINGS_FILE), settings, indent=2)
 
 
+def _writing_style_for_owner(owner: str = "") -> str:
+    """Return the email writing-style prompt for `owner`.
+
+    Named users read their prefs first (see `_PER_USER_KEYS`), then the
+    legacy global `email_writing_style` in settings.json. Unconfigured
+    single-user mode (`owner=""`) uses only the global key.
+    """
+    try:
+        from src.settings import get_user_setting
+        return (get_user_setting("email_writing_style", owner or "", "") or "").strip()
+    except Exception:
+        return (_load_settings().get("email_writing_style") or "").strip()
+
+
+def _save_writing_style_for_owner(owner: str, style: str) -> None:
+    """Persist writing style for `owner` without clobbering other users.
+
+    Authenticated owners write to user_prefs.json. Empty owner (auth
+    disabled / single-user) keeps the legacy settings.json key.
+    """
+    style = style or ""
+    if owner:
+        try:
+            from routes.prefs_routes import _load_for_user, _save_for_user
+            prefs = _load_for_user(owner) or {}
+            prefs["email_writing_style"] = style
+            _save_for_user(owner, prefs)
+            return
+        except Exception as e:
+            logger.warning(f"Failed to save per-user writing style for {owner!r}: {e}")
+    settings = _load_settings()
+    settings["email_writing_style"] = style
+    _save_settings(settings)
+
+
+def _email_account_visible_to_owner(
+    owner: str,
+    account_owner: str = "",
+    imap_user: str = "",
+    from_address: str = "",
+) -> bool:
+    """Whether an EmailAccount row should be processed for `owner`.
+
+    Empty owner (single-user / unconfigured) sees every account. A named
+    owner sees their own rows, plus unowned legacy rows whose IMAP user
+    or From address matches that owner. Other tenants' mailboxes stay out.
+    """
+    if not owner:
+        return True
+    if (account_owner or "") == owner:
+        return True
+    if account_owner:
+        return False
+    identities = {(imap_user or "").strip(), (from_address or "").strip()}
+    identities.discard("")
+    return owner in identities
+
+
 def _get_email_config(account_id: str | None = None, owner: str = "") -> dict:
     """Return IMAP/SMTP config as a dict.
 
