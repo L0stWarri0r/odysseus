@@ -37,6 +37,7 @@ from src.llm_core import llm_call_async
 
 from routes.email_helpers import (
     _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account,
+    mail_error,
     _q, _attach_compose_uploads, _cleanup_compose_uploads,
     _load_settings, _save_settings, _get_email_config,
     _send_smtp_message, _smtp_security_mode,
@@ -2128,8 +2129,11 @@ def setup_email_routes():
 
         try:
             cfg = _resolve_send_config(req.account_id, owner=owner)
+        except ValueError as e:
+            return mail_error(str(e) or "No SMTP-capable email account configured", 400)
         except Exception as e:
-            return {"success": False, "error": str(e) or "No SMTP-capable email account configured"}
+            logger.error(f"Failed to resolve send config: {e}")
+            return mail_error("No SMTP-capable email account configured", 502)
 
         # Use 'mixed' if we have attachments, 'alternative' otherwise
         has_attachments = bool(req.attachments)
@@ -2278,13 +2282,13 @@ def setup_email_routes():
                 return delivery_result
             except Exception as e:
                 logger.error(f"Failed to send email to {_to_label}: {e}")
-                return {"success": False, "error": str(e) or "Failed to send email"}
+                return {"success": False, "error": "Failed to send email"}
 
         if req.wait_for_delivery:
             result = await asyncio.to_thread(_deliver)
             if result.get("success"):
                 return {"success": True, "queued": False, "message": f"Email sent to {req.to}", **result}
-            return result
+            return mail_error(result.get("error") or "Failed to send email")
 
         background_tasks.add_task(_deliver)
         return {
@@ -2303,48 +2307,54 @@ def setup_email_routes():
         """
         if req.account_id:
             _assert_owns_account(req.account_id, owner)
-        cfg = _get_email_config(req.account_id, owner=owner)
+        try:
+            cfg = _get_email_config(req.account_id, owner=owner)
 
-        # Multipart plain+HTML when the WYSIWYG composer supplied HTML, so a
-        # reopened draft keeps its formatting; plain MIMEText otherwise.
-        _draft_html = _sanitize_email_html(req.body_html) if req.body_html else None
-        if _draft_html:
-            msg = MIMEMultipart("alternative")
-            msg.attach(MIMEText(req.body, "plain", "utf-8"))
-            msg.attach(MIMEText(_draft_html, "html", "utf-8"))
-        else:
-            msg = MIMEText(req.body, "plain", "utf-8")
-        msg["From"] = cfg["from_address"]
-        msg["To"] = req.to
-        if req.cc:
-            msg["Cc"] = req.cc
-        if req.bcc:
-            msg["Bcc"] = req.bcc
-        msg["Subject"] = req.subject
-        msg["Date"] = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+            # Multipart plain+HTML when the WYSIWYG composer supplied HTML, so a
+            # reopened draft keeps its formatting; plain MIMEText otherwise.
+            _draft_html = _sanitize_email_html(req.body_html) if req.body_html else None
+            if _draft_html:
+                msg = MIMEMultipart("alternative")
+                msg.attach(MIMEText(req.body, "plain", "utf-8"))
+                msg.attach(MIMEText(_draft_html, "html", "utf-8"))
+            else:
+                msg = MIMEText(req.body, "plain", "utf-8")
+            msg["From"] = cfg["from_address"]
+            msg["To"] = req.to
+            if req.cc:
+                msg["Cc"] = req.cc
+            if req.bcc:
+                msg["Bcc"] = req.bcc
+            msg["Subject"] = req.subject
+            msg["Date"] = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
 
-        if req.in_reply_to:
-            msg["In-Reply-To"] = req.in_reply_to
-        if req.references:
-            msg["References"] = req.references
+            if req.in_reply_to:
+                msg["In-Reply-To"] = req.in_reply_to
+            if req.references:
+                msg["References"] = req.references
 
-        _draft_acct = req.account_id
+            _draft_acct = req.account_id
 
-        def _do_append():
-            try:
-                with _imap(_draft_acct, owner=owner) as imap:
-                    drafts_folder = _detect_drafts_folder(imap)
-                    imap.append(drafts_folder, "\\Draft", None, msg.as_bytes())
-                return None
-            except Exception as e:
-                return str(e)
+            def _do_append():
+                try:
+                    with _imap(_draft_acct, owner=owner) as imap:
+                        drafts_folder = _detect_drafts_folder(imap)
+                        imap.append(drafts_folder, "\\Draft", None, msg.as_bytes())
+                    return None
+                except Exception as e:
+                    return str(e)
 
-        err = await asyncio.to_thread(_do_append)
-        if err:
-            logger.error(f"Failed to save draft: {err}")
-            return {"success": False, "error": err}
-        logger.info(f"Draft saved: {req.subject}")
-        return {"success": True, "message": "Draft saved"}
+            err = await asyncio.to_thread(_do_append)
+            if err:
+                logger.error(f"Failed to save draft: {err}")
+                return mail_error("Failed to save draft")
+            logger.info(f"Draft saved: {req.subject}")
+            return {"success": True, "message": "Draft saved"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to save draft: {e}")
+            return mail_error("Failed to save draft")
 
     @router.post("/extract-style")
     async def extract_writing_style(req: ExtractStyleRequest, owner: str = Depends(require_owner)):
@@ -2397,10 +2407,13 @@ def setup_email_routes():
         try:
             samples, err = await asyncio.to_thread(_gather_samples)
             if err and not samples:
-                return {"success": False, "error": err}
+                if err == "No sent emails found":
+                    return mail_error(err, 404)
+                logger.error(f"Failed to extract writing style: {err}")
+                return mail_error("Mail operation failed")
 
             if len(samples) < 3:
-                return {"success": False, "error": f"Only found {len(samples)} usable sent emails, need at least 3"}
+                return mail_error(f"Only found {len(samples)} usable sent emails, need at least 3", 400)
 
             # Call LLM to analyze writing style. Prefer the utility model;
             # fall back to the default chat model when utility isn't set
@@ -2411,7 +2424,7 @@ def setup_email_routes():
             if not url or not model:
                 url, model, headers = resolve_endpoint("default", owner=owner)
             if not url or not model:
-                return {"success": False, "error": "No LLM endpoint configured — set a Utility or Default Chat model in Settings → AI Defaults."}
+                return mail_error("No LLM endpoint configured — set a Utility or Default Chat model in Settings → AI Defaults.", 400)
 
             sample_text = "\n\n---EMAIL---\n\n".join(samples[:15])
             messages = [
@@ -2435,7 +2448,7 @@ def setup_email_routes():
             style = await llm_call_async(url, model, messages, headers=headers, max_tokens=2048)
             style = _strip_think(style or "")
             if not style:
-                return {"success": False, "error": "LLM failed to generate style description"}
+                return mail_error("LLM failed to generate style description")
 
             # Save to settings
             settings = _load_settings()
@@ -2445,9 +2458,11 @@ def setup_email_routes():
             logger.info("Writing style extracted and saved")
             return {"success": True, "style": style}
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to extract writing style: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/summarize")
     async def summarize_email(data: dict, owner: str = Depends(require_owner)):
@@ -2466,7 +2481,7 @@ def setup_email_routes():
             if account_id:
                 _assert_owns_account(account_id, owner)
             if not body:
-                return {"success": False, "error": "No body provided"}
+                return mail_error("No body provided", 400)
 
             # If we know which UID this is, fetch the raw message and pull
             # attachment text so the summary can reference invoice totals,
@@ -2495,7 +2510,7 @@ def setup_email_routes():
             if not url:
                 url, model, headers = resolve_endpoint("default", owner=owner)
             if not url or not model:
-                return {"success": False, "error": "No LLM endpoint configured"}
+                return mail_error("No LLM endpoint configured", 400)
 
             req_headers = {"Content-Type": "application/json"}
             if headers:
@@ -2518,7 +2533,7 @@ def setup_email_routes():
                 _req.post, url, json=payload, headers=req_headers, timeout=180
             )
             if not resp.ok:
-                return {"success": False, "error": f"LLM HTTP {resp.status_code}"}
+                return mail_error(f"LLM HTTP {resp.status_code}")
             rdata = resp.json()
             msg = (rdata.get("choices") or [{}])[0].get("message", {})
             content = (msg.get("content") or "").strip()
@@ -2541,7 +2556,7 @@ def setup_email_routes():
                     content = paragraphs[-1] if paragraphs else rc[:500]
 
             if not content:
-                return {"success": False, "error": "Empty response from model"}
+                return mail_error("Empty response from model")
 
             # Cache the summary if we have a message_id
             mid = data.get("message_id", "")
@@ -2563,9 +2578,11 @@ def setup_email_routes():
                     logger.warning(f"Failed to cache summary: {e}")
 
             return {"success": True, "summary": content, "model_used": model}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to summarize: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/ai-reply")
     async def ai_reply(data: dict, owner: str = Depends(require_owner)):
@@ -2584,7 +2601,7 @@ def setup_email_routes():
             fast_reply = bool(data.get("fast", False))
 
             if not original_body:
-                return {"success": False, "error": "No email body provided"}
+                return mail_error("No email body provided", 400)
 
             if message_id:
                 try:
@@ -2662,7 +2679,7 @@ def setup_email_routes():
                     model = fallback_model
 
             if not url or not model:
-                return {"success": False, "error": "No LLM endpoint configured"}
+                return mail_error("No LLM endpoint configured", 400)
 
             # Resolve the model against what the endpoint actually serves. A
             # stored session model can drift from the server's
@@ -2781,11 +2798,11 @@ def setup_email_routes():
             except Exception as e:
                 detail = getattr(e, "detail", None) or str(e)
                 _attempted = ", ".join(f"{m}@{u.split('/')[2] if '/' in u else u}" for u, m, _ in _candidates) or "no candidates"
-                return {"success": False, "error": f"All endpoints failed ({_attempted}): {detail}. Check your API keys in Settings → Services."}
+                return mail_error(f"All endpoints failed ({_attempted}): {detail}. Check your API keys in Settings → Services.")
 
             reply = _apply_email_style_mechanics(_extract_reply(reply or ""))
             if not reply:
-                return {"success": False, "error": "LLM returned empty response"}
+                return mail_error("LLM returned empty response")
 
             # Cache so next click is instant
             if message_id:
@@ -2802,9 +2819,11 @@ def setup_email_routes():
                     logger.warning(f"Failed to cache ai_reply: {e}")
 
             return {"success": True, "reply": reply, "model_used": model}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to generate AI reply: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.get("/style")
     async def get_writing_style(owner: str = Depends(require_user)):
