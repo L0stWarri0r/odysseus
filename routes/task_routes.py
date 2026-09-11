@@ -454,30 +454,10 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         if not tables:
             raise HTTPException(400, "This task has no clearable cache")
 
-        import sqlite3
         from pathlib import Path
-        from routes.email_helpers import SCHEDULED_DB
+        from routes.email_helpers import clear_email_cache_tables
 
-        cleared = {}
-        conn = sqlite3.connect(SCHEDULED_DB)
-        try:
-            for table in tables:
-                try:
-                    if table == "email_tags" and user:
-                        before = conn.execute(
-                            "SELECT COUNT(*) FROM email_tags WHERE owner = ? OR owner = ''",
-                            (user,),
-                        ).fetchone()[0]
-                        conn.execute("DELETE FROM email_tags WHERE owner = ? OR owner = ''", (user,))
-                    else:
-                        before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                        conn.execute(f"DELETE FROM {table}")
-                    cleared[table] = int(before or 0)
-                except sqlite3.OperationalError:
-                    cleared[table] = 0
-            conn.commit()
-        finally:
-            conn.close()
+        cleared = clear_email_cache_tables(tables, owner=user or "")
 
         removed_files = 0
         if action == "check_email_urgency":
