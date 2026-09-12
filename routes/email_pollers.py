@@ -40,6 +40,7 @@ from routes.email_helpers import (
     _pre_retrieve_context,
     _attach_compose_uploads, _cleanup_compose_uploads, _q,
     SCHEDULED_DB, _EMAIL_REPLY_SYS_PROMPT_BASE,
+    _email_derivative_existing_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -257,7 +258,10 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
         # this legacy poller path disabled so users don't get two independent
         # urgent-email systems.
         auto_urgent = False
-        _urgent_existing = {r[0] for r in _c.execute("SELECT message_id FROM email_urgency_alerts").fetchall()} if auto_urgent else set()
+        _urgent_existing = (
+            _email_derivative_existing_ids(_c, "email_urgency_alerts", "message_id", account_owner or "")
+            if auto_urgent else set()
+        )
         _c.close()
 
         # Hoist the self-address lookup OUT of the per-email loop — fetching
@@ -733,9 +737,10 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                                 _uc = _sql3.connect(SCHEDULED_DB)
                                 _uc.execute(
                                     "INSERT OR REPLACE INTO email_urgency_alerts "
-                                    "(message_id, uid, folder, subject, sender, urgency, reason, alerted, created_at) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                    (message_id, uid.decode() if isinstance(uid, bytes) else str(uid),
+                                    "(message_id, owner, uid, folder, subject, sender, urgency, reason, alerted, created_at) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    (message_id, account_owner or "",
+                                     uid.decode() if isinstance(uid, bytes) else str(uid),
                                      _folder, subject, sender, urgency, reason,
                                      1 if urgency in ("critical", "high") else 0,
                                      datetime.utcnow().isoformat())

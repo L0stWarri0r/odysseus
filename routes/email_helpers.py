@@ -280,6 +280,43 @@ def attachment_extract_dir(folder: str, uid: str) -> Path:
     return target
 
 
+def _migrate_email_cache_owner_pk(
+    conn,
+    table: str,
+    create_new_sql: str,
+    copy_sql: str,
+    final_name: str,
+    wanted_pk: tuple[str, ...],
+    turns_json: bool = False,
+) -> None:
+    """Add owner + promote it into the PK by rebuild-copy-swap.
+
+    Older installs created these tables with a bare natural-key PK and no
+    owner column. SQLite cannot ALTER a primary key, so we copy into a new
+    table. Existing rows get owner='' (legacy single-user).
+    """
+    try:
+        info = list(conn.execute(f"PRAGMA table_info({table})"))
+        if not info:
+            return
+        cols = [r[1] for r in info]
+        pk_cols = [r[1] for r in sorted(info, key=lambda r: r[5] or 999) if r[5]]
+        if "owner" in cols and pk_cols == list(wanted_pk):
+            return
+        if "owner" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN owner TEXT DEFAULT ''")
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        if turns_json:
+            turns_sel = "turns_json" if "turns_json" in cols else "NULL"
+            copy_sql = copy_sql.format(turns=turns_sel)
+        conn.execute(create_new_sql)
+        conn.execute(copy_sql)
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {table}__new RENAME TO {final_name}")
+    except Exception as mig_e:
+        logger.warning(f"{table} owner-migration skipped: {mig_e}")
+
+
 def _init_scheduled_db():
     import sqlite3
     conn = sqlite3.connect(SCHEDULED_DB)
@@ -392,9 +429,14 @@ def _init_scheduled_db():
             created_at TEXT NOT NULL
         )
     """)
+    # Urgency-alert cache. SECURITY: keyed by (message_id, owner) because
+    # Message-IDs are GLOBAL (a mailing list goes to many users with the
+    # same Message-ID). Without owner-scoping, Alice's skip-set / clear-cache
+    # would hide or wipe Bob's alerts for the same message.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_urgency_alerts (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             subject TEXT,
@@ -402,7 +444,8 @@ def _init_scheduled_db():
             urgency TEXT,
             reason TEXT,
             alerted INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
     conn.execute("""
@@ -418,15 +461,19 @@ def _init_scheduled_db():
     # Boundary cache — LLM-detected sig/quote start positions in the body.
     # Stored as char offsets (-1 = no boundary found). Once cached, the
     # client uses these to fold without ever re-calling the LLM.
+    # SECURITY: keyed by (message_id, owner). Message-IDs are global, so a
+    # mailing-list message analyzed for Alice must not skip or clobber Bob.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS email_boundaries (
-            message_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            owner TEXT DEFAULT '',
             uid TEXT,
             folder TEXT,
             sig_start INTEGER,
             quote_start INTEGER,
             model_used TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, owner)
         )
     """)
     # Lazy migration: add account_id column to scheduled_emails if missing
@@ -479,18 +526,191 @@ def _init_scheduled_db():
     # action: the LLM extracts the common trailing block across N emails
     # from each sender; the renderer folds it consistently for every
     # future email from that address.
+    # SECURITY: keyed by (from_address, owner) so Alice clearing or
+    # refreshing a shared sender cannot wipe Bob's cached signature.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sender_signatures (
-            from_address TEXT PRIMARY KEY,
+            from_address TEXT,
+            owner TEXT DEFAULT '',
             signature_text TEXT,
             sample_count INTEGER,
             last_built_at TEXT NOT NULL,
             model_used TEXT,
-            source TEXT
+            source TEXT,
+            PRIMARY KEY (from_address, owner)
         )
     """)
+    _migrate_email_cache_owner_pk(
+        conn,
+        "email_urgency_alerts",
+        """
+            CREATE TABLE IF NOT EXISTS email_urgency_alerts__new (
+                message_id TEXT,
+                owner TEXT DEFAULT '',
+                uid TEXT, folder TEXT, subject TEXT, sender TEXT,
+                urgency TEXT, reason TEXT, alerted INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (message_id, owner)
+            )
+        """,
+        """
+            INSERT OR IGNORE INTO email_urgency_alerts__new
+              (message_id, owner, uid, folder, subject, sender, urgency,
+               reason, alerted, created_at)
+            SELECT message_id, COALESCE(owner, ''), uid, folder, subject,
+                   sender, urgency, reason, alerted, created_at
+            FROM email_urgency_alerts
+        """,
+        "email_urgency_alerts",
+        ("message_id", "owner"),
+    )
+    _migrate_email_cache_owner_pk(
+        conn,
+        "email_boundaries",
+        """
+            CREATE TABLE IF NOT EXISTS email_boundaries__new (
+                message_id TEXT,
+                owner TEXT DEFAULT '',
+                uid TEXT, folder TEXT,
+                sig_start INTEGER, quote_start INTEGER,
+                model_used TEXT, created_at TEXT NOT NULL, turns_json TEXT,
+                PRIMARY KEY (message_id, owner)
+            )
+        """,
+        """
+            INSERT OR IGNORE INTO email_boundaries__new
+              (message_id, owner, uid, folder, sig_start, quote_start,
+               model_used, created_at, turns_json)
+            SELECT message_id, COALESCE(owner, ''), uid, folder, sig_start,
+                   quote_start, model_used, created_at,
+                   {turns}
+            FROM email_boundaries
+        """,
+        "email_boundaries",
+        ("message_id", "owner"),
+        turns_json=True,
+    )
+    _migrate_email_cache_owner_pk(
+        conn,
+        "sender_signatures",
+        """
+            CREATE TABLE IF NOT EXISTS sender_signatures__new (
+                from_address TEXT,
+                owner TEXT DEFAULT '',
+                signature_text TEXT, sample_count INTEGER,
+                last_built_at TEXT NOT NULL, model_used TEXT, source TEXT,
+                PRIMARY KEY (from_address, owner)
+            )
+        """,
+        """
+            INSERT OR IGNORE INTO sender_signatures__new
+              (from_address, owner, signature_text, sample_count,
+               last_built_at, model_used, source)
+            SELECT from_address, COALESCE(owner, ''), signature_text,
+                   sample_count, last_built_at, model_used, source
+            FROM sender_signatures
+        """,
+        "sender_signatures",
+        ("from_address", "owner"),
+    )
     conn.commit()
     conn.close()
+
+
+def _email_derivative_owner_clause(owner: str = "") -> tuple[str, list]:
+    """Owner filter for derivative email caches (boundaries, signatures,
+    urgency alerts). Authenticated callers fail-closed to their owner.
+    Unconfigured single-user still reads owner='' / NULL legacy rows."""
+    if owner:
+        return "owner = ?", [owner]
+    return "(owner = '' OR owner IS NULL)", []
+
+
+def _email_derivative_existing_ids(conn, table: str, id_col: str, owner: str = "") -> set:
+    """Skip-set of cached ids for one owner. Table/column are allowlisted."""
+    allowed = {
+        ("email_boundaries", "message_id"),
+        ("sender_signatures", "from_address"),
+        ("email_urgency_alerts", "message_id"),
+    }
+    if (table, id_col) not in allowed:
+        raise ValueError(f"unsupported cache table {table}.{id_col}")
+    clause, params = _email_derivative_owner_clause(owner)
+    return {
+        r[0]
+        for r in conn.execute(
+            f"SELECT {id_col} FROM {table} WHERE {clause}",
+            params,
+        ).fetchall()
+        if r and r[0]
+    }
+
+
+def lookup_cached_email_boundaries(conn, message_id: str, owner: str = ""):
+    clause, params = _email_derivative_owner_clause(owner)
+    return conn.execute(
+        "SELECT sig_start, quote_start, turns_json FROM email_boundaries "
+        f"WHERE message_id = ? AND {clause}",
+        (message_id, *params),
+    ).fetchone()
+
+
+def lookup_cached_sender_signature(conn, from_address: str, owner: str = ""):
+    clause, params = _email_derivative_owner_clause(owner)
+    return conn.execute(
+        "SELECT signature_text FROM sender_signatures "
+        f"WHERE from_address = ? AND {clause}",
+        (from_address, *params),
+    ).fetchone()
+
+
+def clear_email_urgency_cache_files(owner: str = "", cache_dir: Path | None = None) -> int:
+    """Remove urgency classification JSON for this owner only.
+
+    Files are named ``{account_id}.json``. Authenticated owners only lose
+    files for accounts they own (plus leftover unowned accounts that match
+    their mailbox). Single-user / unconfigured still wipes the directory.
+    """
+    cache_dir = Path(cache_dir) if cache_dir is not None else Path("data/email_urgency_cache")
+    if not cache_dir.exists():
+        return 0
+    allowed_ids = None
+    if owner:
+        allowed_ids = _urgency_cache_account_ids(owner)
+    removed = 0
+    for child in cache_dir.glob("*.json"):
+        if not child.is_file():
+            continue
+        if allowed_ids is not None and child.stem not in allowed_ids:
+            continue
+        try:
+            child.unlink()
+            removed += 1
+        except Exception:
+            pass
+    return removed
+
+
+def _urgency_cache_account_ids(owner: str) -> set:
+    ids: set[str] = set()
+    if not owner:
+        return ids
+    try:
+        from core.database import SessionLocal as _SL, EmailAccount as _EA
+        from sqlalchemy import and_, or_
+        db = _SL()
+        try:
+            unowned = or_(_EA.owner == None, _EA.owner == "")  # noqa: E711
+            same_mailbox = or_(_EA.imap_user == owner, _EA.from_address == owner)
+            rows = db.query(_EA.id).filter(
+                or_(_EA.owner == owner, and_(unowned, same_mailbox))
+            ).all()
+            ids = {row[0] for row in rows if row and row[0]}
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return ids
 
 
 _init_scheduled_db()
