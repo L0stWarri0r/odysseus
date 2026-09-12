@@ -458,17 +458,23 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         from pathlib import Path
         from routes.email_helpers import SCHEDULED_DB
 
+        owner_scoped_cache = {
+            "email_tags", "email_boundaries", "sender_signatures", "email_urgency_alerts",
+        }
         cleared = {}
         conn = sqlite3.connect(SCHEDULED_DB)
         try:
             for table in tables:
                 try:
-                    if table == "email_tags" and user:
+                    if table in owner_scoped_cache and user:
                         before = conn.execute(
-                            "SELECT COUNT(*) FROM email_tags WHERE owner = ? OR owner = ''",
+                            f"SELECT COUNT(*) FROM {table} WHERE owner = ? OR owner = ''",
                             (user,),
                         ).fetchone()[0]
-                        conn.execute("DELETE FROM email_tags WHERE owner = ? OR owner = ''", (user,))
+                        conn.execute(
+                            f"DELETE FROM {table} WHERE owner = ? OR owner = ''",
+                            (user,),
+                        )
                     else:
                         before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                         conn.execute(f"DELETE FROM {table}")
@@ -481,14 +487,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
 
         removed_files = 0
         if action == "check_email_urgency":
-            cache_dir = Path("data/email_urgency_cache")
-            if cache_dir.exists():
-                for child in cache_dir.glob("*.json"):
-                    try:
-                        child.unlink()
-                        removed_files += 1
-                    except Exception:
-                        pass
+            from routes.email_helpers import clear_email_urgency_cache_files
+            removed_files += clear_email_urgency_cache_files(owner=user or "")
             owner_slug = "".join(c if (c.isalnum() or c in "-_.@") else "_" for c in (user or "default"))
             for state_path in [Path(f"data/email_urgency_state_{owner_slug}.json")]:
                 try:

@@ -774,7 +774,10 @@ async def action_mark_email_boundaries(owner: str, **kwargs) -> Tuple[str, bool]
         import email as _email_mod
         import asyncio as _aio
         from datetime import datetime as _dt
-        from routes.email_helpers import _imap_connect, _decode_header, SCHEDULED_DB
+        from routes.email_helpers import (
+            _imap_connect, _decode_header, SCHEDULED_DB,
+            _email_derivative_existing_ids,
+        )
         from src.endpoint_resolver import resolve_endpoint
         from src.llm_core import llm_call_async
 
@@ -783,7 +786,7 @@ async def action_mark_email_boundaries(owner: str, **kwargs) -> Tuple[str, bool]
         # the action self-contained).
         def _pull_recent():
             results = []
-            conn = _imap_connect(None)
+            conn = _imap_connect(None, owner=owner)
             try:
                 conn.select("INBOX", readonly=True)
                 status, data = conn.search(None, "ALL")
@@ -815,16 +818,16 @@ async def action_mark_email_boundaries(owner: str, **kwargs) -> Tuple[str, bool]
         if not mails:
             raise TaskNoop("no emails to analyze")
 
-        url, model, headers = resolve_endpoint("utility")
+        url, model, headers = resolve_endpoint("utility", owner=owner)
         if not url or not model:
-            url, model, headers = resolve_endpoint("default")
+            url, model, headers = resolve_endpoint("default", owner=owner)
         if not url or not model:
             return "No LLM endpoint available", False
 
         c = _sql3.connect(SCHEDULED_DB)
-        already = {r[0] for r in c.execute(
-            "SELECT message_id FROM email_boundaries"
-        ).fetchall()}
+        already = _email_derivative_existing_ids(
+            c, "email_boundaries", "message_id", owner or "",
+        )
         c.close()
 
         analyzed = 0
@@ -838,7 +841,7 @@ async def action_mark_email_boundaries(owner: str, **kwargs) -> Tuple[str, bool]
             if not uid:
                 continue
             def _fetch_body(_uid):
-                conn = _imap_connect(None)
+                conn = _imap_connect(None, owner=owner)
                 try:
                     conn.select("INBOX", readonly=True)
                     st, data = conn.fetch(_uid, "(BODY.PEEK[TEXT])")
@@ -936,9 +939,9 @@ async def action_mark_email_boundaries(owner: str, **kwargs) -> Tuple[str, bool]
                 c = _sql3.connect(SCHEDULED_DB)
                 c.execute(
                     "INSERT OR REPLACE INTO email_boundaries "
-                    "(message_id, uid, folder, sig_start, quote_start, model_used, created_at, turns_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (mid, str(uid), "INBOX", sig, quote, model, _dt.utcnow().isoformat(), turns_json),
+                    "(message_id, owner, uid, folder, sig_start, quote_start, model_used, created_at, turns_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mid, owner or "", str(uid), "INBOX", sig, quote, model, _dt.utcnow().isoformat(), turns_json),
                 )
                 c.commit()
                 c.close()
@@ -986,7 +989,7 @@ async def action_learn_sender_signatures(owner: str, **kwargs) -> Tuple[str, boo
         # 1. Pull recent UIDs + From headers cheaply (header-only fetch).
         def _pull_headers():
             results = []
-            conn = _imap_connect(None)
+            conn = _imap_connect(None, owner=owner)
             try:
                 conn.select("INBOX", readonly=True)
                 status, data = conn.search(None, "ALL")
@@ -1037,10 +1040,13 @@ async def action_learn_sender_signatures(owner: str, **kwargs) -> Tuple[str, boo
 
         # 3. Eligibility: ≥3 emails AND (no cache OR cache > 30 days old).
         try:
+            from routes.email_helpers import _email_derivative_owner_clause
             conn = _sql3.connect(SCHEDULED_DB)
+            clause, params = _email_derivative_owner_clause(owner or "")
             cached = {
                 r[0]: r[1] for r in conn.execute(
-                    "SELECT from_address, last_built_at FROM sender_signatures"
+                    f"SELECT from_address, last_built_at FROM sender_signatures WHERE {clause}",
+                    params,
                 ).fetchall()
             }
             conn.close()
@@ -1059,9 +1065,9 @@ async def action_learn_sender_signatures(owner: str, **kwargs) -> Tuple[str, boo
         if not eligible:
             return "All sender sigs already cached (or no eligible senders)", True
 
-        url, model, headers = resolve_endpoint("utility")
+        url, model, headers = resolve_endpoint("utility", owner=owner)
         if not url or not model:
-            url, model, headers = resolve_endpoint("default")
+            url, model, headers = resolve_endpoint("default", owner=owner)
         if not url or not model:
             return "No LLM endpoint available", False
 
@@ -1071,7 +1077,7 @@ async def action_learn_sender_signatures(owner: str, **kwargs) -> Tuple[str, boo
 
             def _fetch_bodies(_msgs):
                 bodies = []
-                conn2 = _imap_connect(None)
+                conn2 = _imap_connect(None, owner=owner)
                 try:
                     conn2.select("INBOX", readonly=True)
                     for mm in _msgs:
@@ -1150,9 +1156,9 @@ async def action_learn_sender_signatures(owner: str, **kwargs) -> Tuple[str, boo
                 conn = _sql3.connect(SCHEDULED_DB)
                 conn.execute(
                     "INSERT OR REPLACE INTO sender_signatures "
-                    "(from_address, signature_text, sample_count, last_built_at, model_used, source) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (addr, cached_sig, len(bodies), _dt.utcnow().isoformat(), model, "llm"),
+                    "(from_address, owner, signature_text, sample_count, last_built_at, model_used, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (addr, owner or "", cached_sig, len(bodies), _dt.utcnow().isoformat(), model, "llm"),
                 )
                 conn.commit()
                 conn.close()

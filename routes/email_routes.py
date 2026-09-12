@@ -49,6 +49,7 @@ from routes.email_helpers import (
     SendEmailRequest, ExtractStyleRequest,
     ATTACHMENTS_DIR, COMPOSE_UPLOADS_DIR, SCHEDULED_DB,
     attachment_extract_dir,
+    lookup_cached_email_boundaries, lookup_cached_sender_signature,
 )
 from routes.email_pollers import _start_poller
 
@@ -1229,10 +1230,7 @@ def setup_email_routes():
                 ).fetchone()
                 if _row2:
                     cached_ai_reply = _apply_email_style_mechanics(_extract_reply(_row2[0] or ""))
-                _row3 = _c.execute(
-                    "SELECT sig_start, quote_start, turns_json FROM email_boundaries WHERE message_id = ?",
-                    (message_id.strip(),),
-                ).fetchone()
+                _row3 = lookup_cached_email_boundaries(_c, message_id.strip(), owner)
                 cached_turns = None
                 cached_sender_sig = None
                 # Look up a per-sender cached signature (built by the
@@ -1240,10 +1238,9 @@ def setup_email_routes():
                 # to fold sigs consistently from the same address.
                 try:
                     if sender_addr:
-                        _rs = _c.execute(
-                            "SELECT signature_text FROM sender_signatures WHERE from_address = ?",
-                            (sender_addr.lower().strip(),),
-                        ).fetchone()
+                        _rs = lookup_cached_sender_signature(
+                            _c, sender_addr.lower().strip(), owner,
+                        )
                         if _rs and _rs[0]:
                             cached_sender_sig = _rs[0]
                 except Exception:
