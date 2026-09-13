@@ -37,6 +37,7 @@ from src.llm_core import llm_call_async
 
 from routes.email_helpers import (
     _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account,
+    mail_error,
     _q, _attach_compose_uploads, _cleanup_compose_uploads,
     _load_settings, _save_settings, _get_email_config,
     _send_smtp_message, _smtp_security_mode,
@@ -1815,9 +1816,11 @@ def setup_email_routes():
                         logger.warning(f"Skipped reminder cleanup in {folder_name!r}: {e}")
             _invalidate_list_cache(account_id)
             return {"success": True, "deleted": deleted, "folders_checked": folders_checked}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"delete_odysseus_reminder_emails failed: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/move/{uid}")
     async def move_email(uid: str, folder: str = Query("INBOX"), dest: str = Query(...), account_id: str | None = Query(None), owner: str = Depends(require_owner)):
@@ -1902,7 +1905,7 @@ def setup_email_routes():
             raise
         except Exception as e:
             logger.error(f"Failed to upload attachment: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.delete("/compose-upload/{token}")
     async def delete_compose_upload(token: str, owner: str = Depends(require_owner)):
@@ -1916,7 +1919,7 @@ def setup_email_routes():
             return {"success": True}
         except Exception as e:
             logger.error(f"delete_compose_upload {token!r} failed: {e}")
-            return {"success": False, "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     async def _send_email_sync(
         to, cc, bcc, subject, body, in_reply_to, references, attachments,
@@ -2113,9 +2116,11 @@ def setup_email_routes():
                         break
                 results = [{"email": addr, "name": display} for addr, display in matches.items()]
                 return {"contacts": results[:10], "query": name}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"resolve_contact {name!r} failed: {e}")
-            return {"contacts": [], "error": "Mail operation failed"}
+            return mail_error("Mail operation failed")
 
     @router.post("/send")
     async def send_email(req: SendEmailRequest, background_tasks: BackgroundTasks, owner: str = Depends(require_owner)):

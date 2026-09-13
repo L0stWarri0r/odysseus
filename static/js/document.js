@@ -2658,15 +2658,15 @@ import * as Modals from './modalManager.js';
           method: 'POST',
           body: fd,
         });
-        const data = await res.json();
-        if (data.success) {
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success) {
           doc._composeAtts.push({
             token: data.token,
             filename: data.filename,
             size: data.size,
           });
         } else {
-          if (uiModule) uiModule.showError(`Failed to upload ${file.name}: ${data.error || ''}`);
+          if (uiModule) uiModule.showError(`Failed to upload ${file.name}: ${data.error || data.detail || ''}`);
         }
       } catch (err) {
         if (uiModule) uiModule.showError(`Failed to upload ${file.name}`);
