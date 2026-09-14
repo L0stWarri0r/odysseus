@@ -4513,7 +4513,9 @@ function _showReaderMoreMenu(em, card, reader, anchor) {
           const d = await r.json();
           import('./ui.js').then(m => {
             if (!m.showToast) return;
-            if (d.success && d.message === 'Already exists') m.showToast('Already in contacts');
+            if (!r.ok || d.success === false) {
+              m.showError && m.showError(d.error || d.detail || 'Failed to save contact');
+            } else if (d.success && d.message === 'Already exists') m.showToast('Already in contacts');
             else if (d.success) m.showToast('Saved to contacts');
             else m.showError && m.showError('Failed to save contact');
           }).catch(() => {});

@@ -3510,8 +3510,16 @@ async function initUnifiedIntegrations() {
       const email = el('cm-add-email').value.trim();
       if (!email) { el('cm-add-email').focus(); return; }
       try {
-        await fetch('/api/contacts/add', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email }) });
-      } catch (_) {}
+        const res = await fetch('/api/contacts/add', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email }) });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || d.success === false) {
+          uiModule.showError ? uiModule.showError(d.error || d.detail || 'Failed to add contact') : alert('Failed to add contact');
+          return;
+        }
+      } catch (_) {
+        uiModule.showError ? uiModule.showError('Failed to add contact') : alert('Failed to add contact');
+        return;
+      }
       el('cm-add-name').value = ''; el('cm-add-email').value = '';
       el('cm-add-row').style.display = 'none';
       await _renderContactsManager();
@@ -3567,8 +3575,8 @@ async function initUnifiedIntegrations() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
           });
-          const d = await r.json();
-          if (d.error) throw new Error(d.error);
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.error) throw new Error(d.error || d.detail || 'Import failed');
           imported += Number(d.imported || 0);
           total += Number(d.total || 0);
           failed += Number(d.failed || 0);
@@ -3652,8 +3660,16 @@ async function initUnifiedIntegrations() {
           phones: row.querySelector('.contact-edit-phones').value.split(',').map(s => s.trim()).filter(Boolean),
         };
         try {
-          await fetch('/api/contacts/' + encodeURIComponent(uid), { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        } catch (_) {}
+          const res = await fetch('/api/contacts/' + encodeURIComponent(uid), { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok || d.success === false) {
+            uiModule.showError ? uiModule.showError(d.error || d.detail || 'Failed to update contact') : alert('Failed to update contact');
+            return;
+          }
+        } catch (_) {
+          uiModule.showError ? uiModule.showError('Failed to update contact') : alert('Failed to update contact');
+          return;
+        }
         await _renderContactsManager();
       });
       row.querySelector('.contact-del')?.addEventListener('click', async () => {
@@ -3662,8 +3678,16 @@ async function initUnifiedIntegrations() {
           : window.confirm('Delete this contact?');
         if (!ok) return;
         try {
-          await fetch('/api/contacts/' + encodeURIComponent(uid), { method: 'DELETE', credentials: 'same-origin' });
-        } catch (_) {}
+          const res = await fetch('/api/contacts/' + encodeURIComponent(uid), { method: 'DELETE', credentials: 'same-origin' });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok || d.success === false) {
+            uiModule.showError ? uiModule.showError(d.error || d.detail || 'Failed to delete contact') : alert('Failed to delete contact');
+            return;
+          }
+        } catch (_) {
+          uiModule.showError ? uiModule.showError('Failed to delete contact') : alert('Failed to delete contact');
+          return;
+        }
         await _renderContactsManager();
       });
     });

@@ -15,6 +15,7 @@ import httpx
 from pathlib import Path
 from datetime import datetime
 from fastapi import APIRouter, Query, Depends, Response
+from fastapi.responses import JSONResponse
 from typing import List, Dict, Optional
 
 from src.auth_helpers import require_user
@@ -653,6 +654,20 @@ def _delete_contact(uid: str) -> bool:
 
 # ── Routes ──
 
+def contact_error(message: str, status_code: int = 502) -> JSONResponse:
+    """Return a contacts-operation failure without disguising it as HTTP 200.
+
+    The JSON body stays `{success: false, error}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell the write actually failed instead of treating a silent add,
+    edit, or delete as success.
+    """
+    return JSONResponse(
+        {"success": False, "error": message},
+        status_code=status_code,
+    )
+
+
 def setup_contacts_routes():
     router = APIRouter(prefix="/api/contacts", tags=["contacts"])
 
@@ -686,7 +701,7 @@ def setup_contacts_routes():
         name = (data.get("name") or "").strip()
         email = (data.get("email") or "").strip()
         if not email:
-            return {"success": False, "error": "Email required"}
+            return contact_error("Email required", 400)
         # Check if already exists
         contacts = _fetch_contacts()
         for c in contacts:
@@ -695,7 +710,9 @@ def setup_contacts_routes():
         if not name:
             name = email.split("@")[0]
         ok = _create_contact(name, email)
-        return {"success": ok}
+        if not ok:
+            return contact_error("Failed to save contact")
+        return {"success": True}
 
     @router.post("/import")
     async def import_vcf(data: dict, _admin: str = Depends(require_admin)):
@@ -704,13 +721,18 @@ def setup_contacts_routes():
         csv_text = data.get("csv") or ""
         if text.strip():
             if "BEGIN:VCARD" not in text.upper():
-                return {"success": False, "error": "No vCard data found"}
+                return contact_error("No vCard data found", 400)
             result = _import_vcards(text)
         elif csv_text.strip():
             result = _import_csv_contacts(csv_text)
         else:
-            return {"success": False, "error": "No contact data found"}
+            return contact_error("No contact data found", 400)
+        if result.get("error") and not result.get("imported"):
+            return contact_error(result["error"], 400)
         result["success"] = result.get("imported", 0) > 0
+        if not result["success"] and result.get("failed", 0) > 0:
+            result["error"] = result.get("error") or "Failed to import contacts"
+            return JSONResponse(result, status_code=502)
         return result
 
     @router.get("/export")
@@ -773,18 +795,22 @@ def setup_contacts_routes():
         emails = [e.strip() for e in (emails or []) if e and e.strip()]
         phones = [p.strip() for p in (phones or []) if p and p.strip()]
         if not name and not emails:
-            return {"success": False, "error": "Name or email required"}
+            return contact_error("Name or email required", 400)
         if not name and emails:
             name = emails[0].split("@")[0]
         ok = _update_contact(uid, name, emails, phones)
-        return {"success": ok}
+        if not ok:
+            return contact_error("Failed to update contact")
+        return {"success": True}
 
     @router.delete("/{uid}")
     async def delete_contact(uid: str, _admin: str = Depends(require_admin)):
         """Delete a contact by UID."""
         if not uid:
-            return {"success": False, "error": "UID required"}
+            return contact_error("UID required", 400)
         ok = _delete_contact(uid)
-        return {"success": ok}
+        if not ok:
+            return contact_error("Failed to delete contact")
+        return {"success": True}
 
     return router
