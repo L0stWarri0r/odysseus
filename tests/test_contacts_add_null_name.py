@@ -6,8 +6,10 @@ gives name=None, so None.strip() raised AttributeError -> 500. Now guarded with
 `(data.get("name") or "")`.
 """
 import asyncio
+import json
 
 import pytest
+from fastapi.responses import JSONResponse
 
 import routes.contacts_routes as cr
 
@@ -20,6 +22,12 @@ def _add_handler():
     raise AssertionError("add_contact route not found")
 
 
+def _payload(res):
+    if isinstance(res, JSONResponse):
+        return res.status_code, json.loads(res.body)
+    return 200, res
+
+
 @pytest.fixture
 def _stub_store(monkeypatch):
     created = []
@@ -30,7 +38,8 @@ def _stub_store(monkeypatch):
 
 def test_null_name_does_not_crash(_stub_store):
     handler = _add_handler()
-    result = asyncio.run(handler({"name": None, "email": "x@y.com"}, _admin="admin"))
+    status, result = _payload(asyncio.run(handler({"name": None, "email": "x@y.com"}, _admin="admin")))
+    assert status == 200
     assert result["success"] is True
     # name fell back to the email local-part instead of crashing.
     assert _stub_store == [("x", "x@y.com")]
@@ -38,5 +47,6 @@ def test_null_name_does_not_crash(_stub_store):
 
 def test_null_email_is_rejected_cleanly(_stub_store):
     handler = _add_handler()
-    result = asyncio.run(handler({"name": "Bob", "email": None}, _admin="admin"))
+    status, result = _payload(asyncio.run(handler({"name": "Bob", "email": None}, _admin="admin")))
+    assert status == 400
     assert result == {"success": False, "error": "Email required"}
