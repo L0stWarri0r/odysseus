@@ -1495,9 +1495,10 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
     @router.post("/api/document/{doc_id}/prepare-signed-reply")
     async def prepare_signed_reply(doc_id: str, request: Request):
         """Bake the current PDF state (form fields + signature stamps +
-        annotations) into a flattened PDF, drop it in COMPOSE_UPLOADS_DIR
-        and return the reply context (To/Subject/threading headers) so the
-        frontend can open a reply draft with this attachment pre-loaded.
+        annotations) into a flattened PDF, drop it in the caller's
+        owner-prefixed compose-upload directory, and return the reply
+        context (To/Subject/threading headers) so the frontend can open a
+        reply draft with this attachment pre-loaded.
 
         Requires the document to have source_email_* metadata (set when the
         doc was created via /api/email/attachment-as-doc). Otherwise 400.
@@ -1514,15 +1515,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
         from src.pdf_forms import fill_fields, stamp_signatures, stamp_annotations
         from src.constants import UPLOAD_DIR
         from core.database import Signature
-        # COMPOSE_UPLOADS_DIR lives in email_routes — re-derive here so we
-        # don't import from a routes file (cycle-prone). Same env override
-        # as email_routes (ODYSSEUS_MAIL_ATTACHMENTS_DIR).
-        from pathlib import Path as _Path
-        import os as _os
-        _DATA_DIR = _Path(__file__).resolve().parent.parent / "data"
-        _BASE = _os.environ.get("ODYSSEUS_MAIL_ATTACHMENTS_DIR", str(_DATA_DIR / "mail-attachments"))
-        _COMPOSE_DIR = _Path(_BASE) / "_compose"
-        _COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
+        from routes.email_helpers import _compose_upload_path
 
         user = get_current_user(request)
         db = SessionLocal()
@@ -1617,14 +1610,18 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 except Exception as e:
                     logger.warning(f"stamp_annotations failed for {doc_id}: {e}")
 
-            # 2) Move/copy into COMPOSE_UPLOADS_DIR with the token format
-            #    `<uuid>_<original_name>` that /api/email/send expects.
+            # 2) Move/copy into the owner's compose-upload prefix with the
+            #    token format `<uuid>_<original_name>` that /api/email/send
+            #    expects. Must not land in the shared `_compose` root — a
+            #    leaked token would otherwise be attachable by any user.
             filename = _slug(doc.title or "signed") + "_signed.pdf"
             token = f"{_uuid.uuid4().hex}_{filename}"
-            dest = _COMPOSE_DIR / token
+            dest = _compose_upload_path(token, user or "", create=True)
+            if dest is None:
+                raise HTTPException(500, "Could not stage signed PDF")
             shutil.copyfile(out_path, str(dest))
             # Unlink the intermediate temp PDFs now that they've been
-            # copied into COMPOSE_UPLOADS_DIR.
+            # copied into the owner-prefixed compose-upload directory.
             for _p in _to_unlink:
                 try:
                     os.unlink(_p)

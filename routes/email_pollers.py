@@ -1020,7 +1020,7 @@ def _scheduled_poll_once() -> dict:
                 body_container.attach(MIMEText(f"<html><body>{html_body}</body></html>", "html", "utf-8"))
                 if has_atts:
                     outer.attach(body_container)
-                    _attach_compose_uploads(outer, attachments)
+                    _attach_compose_uploads(outer, attachments, owner=row_owner)
                 recipients = [a.strip() for a in (r[1] or "").split(",") if a.strip()]
                 if r[2]:
                     recipients.extend([a.strip() for a in r[2].split(",") if a.strip()])
@@ -1037,7 +1037,7 @@ def _scheduled_poll_once() -> dict:
                 except Exception as e:
                     logger.warning(f"Failed to append scheduled {sid} to Sent: {e}")
 
-                _cleanup_compose_uploads(attachments)
+                _cleanup_compose_uploads(attachments, owner=row_owner)
 
                 conn2 = sqlite3.connect(SCHEDULED_DB)
                 conn2.execute("UPDATE scheduled_emails SET status='sent' WHERE id=?", (sid,))
