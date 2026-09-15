@@ -13,6 +13,7 @@ and `email_pollers.py` (the background loops):
 """
 
 import os
+import hashlib
 import imaplib
 import smtplib
 import email as email_mod
@@ -216,18 +217,18 @@ def _q(name: str) -> str:
     return '"' + (name or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _attach_compose_uploads(outer: MIMEMultipart, tokens) -> None:
+def _attach_compose_uploads(outer: MIMEMultipart, tokens, owner: str = "") -> None:
     """Read each staged upload token, build a MIMEBase part, and attach to
-    `outer`. Tokens are sanitized via Path(token).name to prevent traversal.
-    Missing files are skipped silently. Used by /send, scheduled delivery,
-    and the agent send pipeline."""
+    `outer`. Tokens are sanitized via Path(token).name to prevent traversal
+    and resolved inside the caller's owner prefix so a leaked token cannot
+    attach another user's file. Missing files are skipped silently. Used by
+    /send, scheduled delivery, and the agent send pipeline."""
     if not tokens:
         return
     for token in tokens:
-        safe_token = Path(token).name
-        path = COMPOSE_UPLOADS_DIR / safe_token
-        if not path.exists():
-            logger.warning(f"Attachment token not found: {safe_token}")
+        path = _compose_upload_path(token, owner)
+        if path is None or not path.exists():
+            logger.warning(f"Attachment token not found: {Path(token).name}")
             continue
         ctype, encoding = mimetypes.guess_type(str(path))
         if ctype is None or encoding is not None:
@@ -238,18 +239,23 @@ def _attach_compose_uploads(outer: MIMEMultipart, tokens) -> None:
             part.set_payload(f.read())
         encoders.encode_base64(part)
         # Token format: "<uuid>_<original_name>"
-        original_name = safe_token.split("_", 1)[1] if "_" in safe_token else safe_token
+        original_name = _compose_original_name(path.name)
         part.add_header("Content-Disposition", "attachment", filename=original_name)
         outer.attach(part)
 
 
-def _cleanup_compose_uploads(tokens) -> None:
-    """Best-effort unlink of staged uploads after delivery (or failure)."""
+def _cleanup_compose_uploads(tokens, owner: str = "") -> None:
+    """Best-effort unlink of staged uploads after delivery (or failure).
+
+    Only unlinks files in the caller's owner prefix — a leaked token must
+    not let another user delete someone else's staged attachment."""
     if not tokens:
         return
     for token in tokens:
         try:
-            (COMPOSE_UPLOADS_DIR / Path(token).name).unlink(missing_ok=True)
+            path = _compose_upload_path(token, owner)
+            if path is not None:
+                path.unlink(missing_ok=True)
         except Exception:
             pass
 
@@ -264,6 +270,65 @@ ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 COMPOSE_UPLOADS_DIR = ATTACHMENTS_DIR / "_compose"
 COMPOSE_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 SCHEDULED_DB = DATA_DIR / "scheduled_emails.db"
+
+# Empty / single-user owner bucket. Kept distinct from authenticated owner
+# prefixes so unscoped writes never land next to another user's files.
+_COMPOSE_UNSCOPED_OWNER = "_"
+
+
+def _compose_owner_segment(owner: str) -> str:
+    """Filesystem-safe owner prefix for staged compose uploads.
+
+    Authenticated owners get their own subdirectory of COMPOSE_UPLOADS_DIR so
+    a leaked `{uuid}_{filename}` token cannot be attached or deleted by
+    another user. The digest suffix prevents two owners that sanitize to the
+    same label (e.g. `alice/bob` vs `alice_bob`) from sharing a directory.
+    Empty owner (single-user / unconfigured) uses `_`.
+    """
+    raw = (owner or "").strip()
+    if not raw:
+        return _COMPOSE_UNSCOPED_OWNER
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    label = re.sub(r"[^A-Za-z0-9._-]", "_", raw)[:32] or "user"
+    if label in {".", ".."} or label.startswith("."):
+        label = "user"
+    return f"{label}.{digest}"
+
+
+def _compose_owner_dir(owner: str, *, create: bool = False) -> Path:
+    d = COMPOSE_UPLOADS_DIR / _compose_owner_segment(owner)
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _compose_original_name(safe_token: str) -> str:
+    """Recover the original filename from `{uuid}_{filename}` tokens."""
+    return safe_token.split("_", 1)[1] if "_" in safe_token else safe_token
+
+
+def _compose_upload_path(token: str, owner: str = "", *, create: bool = False) -> Path | None:
+    """Resolve a compose-upload token inside the caller's owner prefix.
+
+    Returns None when the token is empty, `.` / `..`, or would escape the
+    owner directory. Callers treat None as missing (skip / no-op). Writes
+    pass `create=True` so the owner directory exists before open().
+    """
+    safe_token = Path(token or "").name
+    if not safe_token or safe_token in {".", ".."}:
+        return None
+    owner_dir = _compose_owner_dir(owner, create=create)
+    path = (owner_dir / safe_token).resolve()
+    try:
+        base = owner_dir.resolve()
+        compose_base = COMPOSE_UPLOADS_DIR.resolve()
+    except OSError:
+        return None
+    if path == base or base not in path.parents:
+        return None
+    if compose_base not in path.parents:
+        return None
+    return path
 
 
 def attachment_extract_dir(folder: str, uid: str) -> Path:
@@ -1376,7 +1441,8 @@ class SendEmailRequest(BaseModel):
     body_html: Optional[str] = None
     in_reply_to: Optional[str] = None
     references: Optional[str] = None
-    # List of uploaded attachment tokens (filenames in COMPOSE_UPLOADS_DIR)
+    # List of uploaded attachment tokens (`{uuid}_{filename}` inside the
+    # caller's owner prefix of COMPOSE_UPLOADS_DIR)
     attachments: Optional[List[str]] = None
     # Which account to send from. None = default account.
     account_id: Optional[str] = None
