@@ -5,6 +5,7 @@ import uuid
 from typing import Dict, Any, List
 
 from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.request_models import PresetUpdateRequest
@@ -19,6 +20,20 @@ class UserTemplateRequest(BaseModel):
     system_prompt: str = Field("", max_length=10000)
     temperature: float = Field(1.0, ge=0.0, le=2.0)
     max_tokens: int = Field(0, ge=0, le=65536)
+
+
+def preset_error(message: str, status_code: int = 502) -> JSONResponse:
+    """Return a preset-operation failure without disguising it as HTTP 200.
+
+    The JSON body stays `{success: false, message}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a save, delete, or expand actually failed instead of treating
+    HTTP 200 as success.
+    """
+    return JSONResponse(
+        {"success": False, "message": message},
+        status_code=status_code,
+    )
 
 
 def setup_preset_routes(preset_manager) -> APIRouter:
@@ -42,7 +57,7 @@ def setup_preset_routes(preset_manager) -> APIRouter:
             )
             if success:
                 return {"success": True, "message": "Custom preset updated"}
-            return {"success": False, "message": "Failed to save preset"}
+            return preset_error("Failed to save preset")
         except Exception as e:
             logger.error(f"Preset update error: {e}")
             raise HTTPException(500, "Failed to update custom preset")
@@ -59,14 +74,17 @@ def setup_preset_routes(preset_manager) -> APIRouter:
         success = preset_manager.save_user_template(template)
         if success:
             return {"success": True, "template": template}
-        return {"success": False, "message": "Failed to save template"}
+        return preset_error("Failed to save template")
 
     @router.delete("/api/presets/templates/{template_id}")
     async def delete_user_template(template_id: str, _admin: None = Depends(require_admin)) -> Dict[str, Any]:
+        existing = preset_manager.get_user_templates() or []
+        if not any(isinstance(t, dict) and str(t.get("id")) == template_id for t in existing):
+            return preset_error("Template not found", 404)
         success = preset_manager.delete_user_template(template_id)
         if success:
             return {"success": True}
-        return {"success": False, "message": "Failed to delete template"}
+        return preset_error("Failed to delete template")
 
     @router.post("/api/presets/expand")
     async def expand_character_prompt(request: Request) -> Dict[str, Any]:
@@ -75,11 +93,11 @@ def setup_preset_routes(preset_manager) -> APIRouter:
         from src.llm_core import llm_call_async
 
         data = await request.json()
-        draft = (data.get("prompt") or "").strip()
-        name = (data.get("name") or "").strip()
+        draft = (data.get("prompt") or "").strip() if isinstance(data, dict) else ""
+        name = (data.get("name") or "").strip() if isinstance(data, dict) else ""
 
         if not draft and not name:
-            return {"success": False, "message": "Nothing to expand"}
+            return preset_error("Nothing to expand", 400)
 
         user_input = ""
         if name:
@@ -105,7 +123,7 @@ def setup_preset_routes(preset_manager) -> APIRouter:
             return {"success": True, "prompt": result.strip()}
         except Exception as e:
             logger.error(f"Expand prompt failed: {e}")
-            return {"success": False, "message": str(e)}
+            return preset_error("Failed to expand prompt")
 
     # ── Group presets ──
     @router.get("/api/presets/groups")
@@ -117,7 +135,12 @@ def setup_preset_routes(preset_manager) -> APIRouter:
     async def save_group_presets(request: Request, _admin: None = Depends(require_admin)):
         """Save group chat presets."""
         data = await request.json()
-        preset_manager.save_group_presets(data.get("groups", []))
-        return {"ok": True}
+        groups = data.get("groups", []) if isinstance(data, dict) else None
+        if not isinstance(groups, list):
+            return preset_error("Invalid group presets", 400)
+        success = preset_manager.save_group_presets(groups)
+        if success:
+            return {"ok": True}
+        return preset_error("Failed to save group presets")
 
     return router

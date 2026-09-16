@@ -183,11 +183,12 @@ function _initGroupTab() {
         const exists = groups.some(g => (g.participants || []).map(p => p.modelId + ':' + (p.characterId || '')).sort().join(',') === sig);
         if (!exists) {
           groups.push(presetData);
-          await fetch(API_BASE + '/api/presets/groups', {
+          const saveRes = await fetch(API_BASE + '/api/presets/groups', {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ groups }),
           });
+          if (!saveRes.ok) console.error('Failed to save group presets', saveRes.status);
         }
       } catch (e) {}
     }
@@ -238,7 +239,10 @@ function _initGroupTab() {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ groups }),
-          }).then(() => _loadGroupPresets());
+          }).then(r => {
+            if (!r.ok) console.error('Failed to save group presets', r.status);
+            _loadGroupPresets();
+          });
         });
         chip.appendChild(chipX);
         chip.title = (g.participants || []).map(p => p.characterName || p.modelDisplay || '?').join(', ');
@@ -266,7 +270,10 @@ function _initGroupTab() {
               method: 'POST', credentials: 'same-origin',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ groups }),
-            }).then(() => _loadGroupPresets());
+            }).then(r => {
+              if (!r.ok) console.error('Failed to save group presets', r.status);
+              _loadGroupPresets();
+            });
           }
         });
         presetsDiv.appendChild(chip);
