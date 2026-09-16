@@ -138,13 +138,13 @@ function initExpandButton() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, prompt: draft, model: currentModel }),
       });
-      const data = await res.json();
-      if (data.success && data.prompt && promptInput) {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false || !data.prompt) {
+        console.error('Expand error:', data.message || data.detail || res.status);
+      } else if (promptInput) {
         promptInput.value = data.prompt;
         promptInput.style.height = 'auto';
         promptInput.style.height = promptInput.scrollHeight + 'px';
-      } else if (data.message) {
-        console.error('Expand error:', data.message);
       }
     } catch (e) {
       console.error('Expand failed:', e);
@@ -242,7 +242,12 @@ function initNameDropdown() {
       try {
         // Delete saved template if exists
         if (match) {
-          await fetch(`${API_BASE}/api/presets/templates/${match.id}`, { method: 'DELETE' });
+          const res = await fetch(`${API_BASE}/api/presets/templates/${match.id}`, { method: 'DELETE' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.success === false) {
+            console.error('Delete character failed:', data.message || res.status);
+            return;
+          }
         }
         // Hide built-in preset
         if (isBuiltin) {
@@ -476,8 +481,13 @@ function initSaveAsTemplate() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(template),
       });
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        console.error('Failed to save template:', data.message || res.status);
+        btn.textContent = 'Error';
+        setTimeout(() => { btn.textContent = 'Save as Template'; }, 2000);
+        return;
+      }
       if (data.success) {
         await loadUserTemplates();
         btn.textContent = 'Saved!';
@@ -797,7 +807,13 @@ export async function saveCustomPreset(showToast, showError) {
       body: JSON.stringify(config)
     });
 
-    const result = await response.json();
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.success === false) {
+      if (showError) {
+        showError(result.message || result.error || result.detail || 'Failed to save custom preset');
+      }
+      return;
+    }
     if (result.success) {
       presets.custom = { ...presets.custom, ...config, character_name: name, enabled: enabled };
 
@@ -848,10 +864,6 @@ export async function saveCustomPreset(showToast, showError) {
       const modal = document.getElementById('custom-preset-modal');
       if (modal) {
         modal.classList.add('hidden');
-      }
-    } else {
-      if (showError) {
-        showError('Failed to save custom preset');
       }
     }
   } catch (error) {
