@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from core.database import SessionLocal, ScheduledTask, TaskRun
@@ -16,6 +17,19 @@ from src.task_scheduler import compute_next_run, HOUSEKEEPING_DEFAULTS
 from routes.prefs_routes import _load_for_user, _save_for_user
 
 logger = logging.getLogger(__name__)
+
+
+def task_error(message: str, status_code: int = 502) -> JSONResponse:
+    """Return a task-parse failure without disguising it as HTTP 200.
+
+    The JSON body stays `{success: false, message}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a draft actually failed instead of treating HTTP 200 as success.
+    """
+    return JSONResponse(
+        {"success": False, "message": message},
+        status_code=status_code,
+    )
 
 
 class TaskCreate(BaseModel):
@@ -918,10 +932,14 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         import json as _json, re as _re
         from datetime import datetime as _dt
 
-        body = await request.json()
-        desc = (body.get("description") or "").strip()
+        try:
+            body = await request.json()
+        except Exception:
+            return task_error("Nothing to parse", 400)
+        raw_desc = body.get("description") if isinstance(body, dict) else None
+        desc = raw_desc.strip() if isinstance(raw_desc, str) else ""
         if not desc:
-            return {"success": False, "message": "Nothing to parse"}
+            return task_error("Nothing to parse", 400)
 
         now = _dt.now()
         # Give the model the current date/time + weekday so relative phrasing
@@ -952,7 +970,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             if not url:
                 url, model, headers = resolve_endpoint("default")
             if not (url and model):
-                return {"success": False, "message": "No model endpoint configured"}
+                return task_error("No model endpoint configured")
             raw = await llm_call_async(
                 url=url, model=model,
                 messages=[{"role": "system", "content": sys},
@@ -991,10 +1009,10 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 out["output_target"] = draft["output_target"]
             out["trigger_type"] = "schedule"
             if not out.get("prompt"):
-                return {"success": False, "message": "Could not extract a task instruction"}
+                return task_error("Could not extract a task instruction")
             return {"success": True, "draft": out}
         except Exception as e:
             logger.error(f"parse_task failed: {e}")
-            return {"success": False, "message": str(e)}
+            return task_error("Failed to parse task")
 
     return router

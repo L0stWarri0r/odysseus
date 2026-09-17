@@ -2386,9 +2386,10 @@ async function _aiDraftTask(inputEl, btnEl) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description: desc }),
     });
-    const data = await res.json();
-    if (!data.success || !data.draft) {
-      if (uiModule) uiModule.showError(data.message || 'Could not draft task');
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok || data.success === false || !data.draft) {
+      if (uiModule) uiModule.showError(data.message || data.error || 'Could not draft task');
       return;
     }
     const draft = data.draft;
