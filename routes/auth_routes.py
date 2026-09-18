@@ -1,6 +1,7 @@
 """Authentication routes — login, logout, signup, status, user management."""
 
 from fastapi import APIRouter, Request, Response, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
@@ -30,6 +31,19 @@ from src.integrations import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def integration_error(message: str, status_code: int = 502) -> JSONResponse:
+    """Return an integration-test failure without disguising it as HTTP 200.
+
+    The JSON body stays `{ok: false, message}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a test actually failed instead of treating HTTP 200 as success.
+    """
+    return JSONResponse(
+        {"ok": False, "message": message},
+        status_code=status_code,
+    )
 
 
 class LoginRequest(BaseModel):
@@ -524,7 +538,9 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
                 elif auth_type == "header":
                     headers[integ.get("auth_header") or "Authorization"] = api_key
             try:
-                async with httpx.AsyncClient(timeout=8.0) as client:
+                async with httpx.AsyncClient(
+                    timeout=8.0, follow_redirects=False, trust_env=False
+                ) as client:
                     r = await client.post(
                         full_url,
                         content="Connectivity test from Odysseus. If you see this on your phone, ntfy is wired up correctly.",
@@ -544,12 +560,18 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
                             f"\"{base}\" (or paste the full URL: {full_url})."
                         ),
                     }
-                return {"ok": False, "message": f"ntfy returned HTTP {r.status_code} from {full_url}: {r.text[:200]}"}
+                logger.warning("ntfy returned HTTP %s from %s", r.status_code, full_url)
+                return integration_error(
+                    f"ntfy returned HTTP {r.status_code} from {full_url}"
+                )
             except Exception as e:
+                logger.warning("ntfy publish to %s failed: %s", full_url, e)
                 hint = ""
                 if parsed.hostname not in ("127.0.0.1", "localhost"):
                     hint = " If this is Docker Compose ntfy, set NTFY_BIND to that host/Tailscale IP and NTFY_BASE_URL to the same server URL in .env, then recreate ntfy."
-                return {"ok": False, "message": f"ntfy publish to {full_url} failed: {e}.{hint}"[:500]}
+                return integration_error(
+                    f"ntfy publish to {full_url} failed.{hint}".strip()[:500]
+                )
 
         # All other presets: GET against a known health endpoint.
         # Fall back to detecting from name if preset is missing.
@@ -564,6 +586,6 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         result = await execute_api_call(integration_id, "GET", path)
         if result.get("exit_code", 1) == 0:
             return {"ok": True, "message": "Connection successful"}
-        return {"ok": False, "message": (result.get("error") or "Connection failed")[:300]}
+        return integration_error("Connection failed")
 
     return router
