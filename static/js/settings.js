@@ -3060,9 +3060,10 @@ async function initIntegrations() {
     statusEl.style.color = 'var(--fg)';
     try {
       const res = await fetch(`/api/auth/integrations/${editingId}/test`, { method: 'POST', credentials: 'same-origin' });
-      const data = await res.json();
-      statusEl.textContent = data.message || (data.ok ? 'OK' : 'Failed');
-      statusEl.style.color = data.ok ? 'var(--green, #98c379)' : 'var(--red)';
+      const data = await res.json().catch(() => ({}));
+      const ok = res.ok && data.ok;
+      statusEl.textContent = data.message || (ok ? 'OK' : 'Failed');
+      statusEl.style.color = ok ? 'var(--green, #98c379)' : 'var(--red)';
     } catch (e) {
       statusEl.textContent = 'Connection failed';
       statusEl.style.color = 'var(--red)';
@@ -3352,9 +3353,9 @@ async function initUnifiedIntegrations() {
       if (!_editId) { el('uf-api-msg').textContent = 'Save first'; return; }
       try {
         const r = await fetch(`/api/auth/integrations/${_editId}/test`, { method: 'POST', credentials: 'same-origin' });
-        const d = await r.json();
-        // Backend returns {ok: bool, message: str}
-        if (d.ok) {
+        const d = await r.json().catch(() => ({}));
+        // Backend returns {ok: bool, message: str}; failures are non-200.
+        if (r.ok && d.ok) {
           el('uf-api-msg').textContent = d.message || 'Connected';
           el('uf-api-msg').style.color = 'var(--green,#50fa7b)';
         } else {
