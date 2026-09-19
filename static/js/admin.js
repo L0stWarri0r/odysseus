@@ -1946,9 +1946,10 @@ function initCalDAV() {
         body: JSON.stringify({ caldav_url: urlIn.value, caldav_username: userIn.value, caldav_password: passIn.value }),
       });
       const res = await fetch(`${API_BASE}/api/calendar/test`, { method: 'POST', credentials: 'same-origin' });
-      const d = await res.json();
-      status.textContent = d.ok ? `Connected (${d.calendars} calendars)` : `Failed: ${d.error}`;
-      status.style.color = d.ok ? 'var(--green)' : 'var(--red)';
+      const d = await res.json().catch(() => ({}));
+      const ok = res.ok && d.ok;
+      status.textContent = ok ? `Connected (${d.calendars} calendars)` : `Failed: ${d.error || 'Failed'}`;
+      status.style.color = ok ? 'var(--green)' : 'var(--red)';
     } catch (e) { status.textContent = 'Error'; status.style.color = 'var(--red)'; }
     setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 5000);
   });

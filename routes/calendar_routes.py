@@ -6,6 +6,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional, List, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import or_, and_
 from dateutil.rrule import rrulestr, rruleset
@@ -15,6 +16,19 @@ from core.database import SessionLocal, CalendarCal, CalendarEvent
 from src.auth_helpers import get_current_user, require_user
 
 logger = logging.getLogger(__name__)
+
+
+def calendar_error(message: str, status_code: int = 502) -> JSONResponse:
+    """Return a CalDAV-test failure without disguising it as HTTP 200.
+
+    The JSON body stays `{ok: false, error}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a test actually failed instead of treating HTTP 200 as success.
+    """
+    return JSONResponse(
+        {"ok": False, "error": message},
+        status_code=status_code,
+    )
 
 
 def _ics_naive_dtstart(dt):
@@ -639,12 +653,13 @@ def setup_calendar_routes() -> APIRouter:
                     except Exception:
                         pass
         if not (url and user and pw):
-            return {"ok": False, "error": "Missing URL, username, or password"}
+            return calendar_error("Missing URL, username, or password", 400)
         from src.caldav_sync import validate_caldav_url
         try:
             url = validate_caldav_url(url)
         except ValueError as e:
-            return {"ok": False, "error": str(e)}
+            logger.warning("CalDAV URL rejected: %s", e)
+            return calendar_error("Invalid CalDAV URL", 400)
         import httpx
         propfind_body = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -676,20 +691,25 @@ def setup_calendar_routes() -> APIRouter:
             if r.status_code in (200, 207):
                 return {"ok": True}
             if r.status_code == 401:
-                return {"ok": False, "error": "Auth failed — check username/password"}
+                return calendar_error("Auth failed — check username/password")
             if r.status_code == 403:
-                return {"ok": False, "error": "Forbidden — user can't access that URL"}
+                return calendar_error("Forbidden — user can't access that URL")
             if r.status_code == 404:
-                return {"ok": False, "error": "Not found — check the URL path"}
+                return calendar_error("Not found — check the URL path")
             if 300 <= r.status_code < 400:
-                return {"ok": False, "error": "Redirects are not followed for CalDAV safety; use the final URL"}
-            return {"ok": False, "error": f"HTTP {r.status_code}"}
+                return calendar_error(
+                    "Redirects are not followed for CalDAV safety; use the final URL"
+                )
+            logger.warning("CalDAV test returned HTTP %s from %s", r.status_code, url)
+            return calendar_error(f"HTTP {r.status_code}")
         except httpx.ConnectError as e:
-            return {"ok": False, "error": f"Connection refused: {e}"[:200]}
+            logger.warning("CalDAV connection refused for %s: %s", url, e)
+            return calendar_error("Connection refused")
         except httpx.TimeoutException:
-            return {"ok": False, "error": "Connection timed out"}
+            return calendar_error("Connection timed out")
         except Exception as e:
-            return {"ok": False, "error": str(e)[:200]}
+            logger.warning("CalDAV test against %s failed: %s", url, e)
+            return calendar_error("CalDAV connection failed")
 
     @router.post("/sync")
     async def sync_caldav_endpoint(request: Request):
