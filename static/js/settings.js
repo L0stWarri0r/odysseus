@@ -3398,7 +3398,9 @@ async function initUnifiedIntegrations() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        return await r.json();
+        const d = await r.json().catch(() => ({}));
+        const ok = r.ok && d.ok;
+        return { ok, error: d.error };
       } catch (e) {
         return { ok: false, error: 'Network error: ' + e.message };
       }
