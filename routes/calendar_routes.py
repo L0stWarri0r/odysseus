@@ -6,6 +6,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional, List, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import or_, and_
 from dateutil.rrule import rrulestr, rruleset
@@ -15,6 +16,19 @@ from core.database import SessionLocal, CalendarCal, CalendarEvent
 from src.auth_helpers import get_current_user, require_user
 
 logger = logging.getLogger(__name__)
+
+
+def calendar_error(message: str, status_code: int = 502) -> JSONResponse:
+    """Return a calendar API failure without disguising it as HTTP 200.
+
+    The JSON body stays `{ok: false, error}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a request actually failed instead of treating HTTP 200 as success.
+    """
+    return JSONResponse(
+        {"ok": False, "error": message},
+        status_code=status_code,
+    )
 
 
 def _ics_naive_dtstart(dt):
@@ -1208,17 +1222,22 @@ def setup_calendar_routes() -> APIRouter:
         import json as _json
         import re as _re
 
-        body = await request.json()
-        text = (body.get("text") or "").strip()
+        try:
+            body = await request.json()
+        except Exception:
+            return calendar_error("text is required", 400)
+        raw_text = body.get("text") if isinstance(body, dict) else None
+        text = raw_text.strip() if isinstance(raw_text, str) else ""
         if not text:
-            raise HTTPException(400, "text is required")
-        tz_hint = (body.get("tz") or "").strip()
+            return calendar_error("text is required", 400)
+        tz_raw = body.get("tz") if isinstance(body, dict) else None
+        tz_hint = tz_raw.strip() if isinstance(tz_raw, str) else ""
 
         url, model, headers = resolve_endpoint("utility")
         if not url:
             url, model, headers = resolve_endpoint("default")
         if not url or not model:
-            return {"ok": False, "error": "No LLM endpoint configured"}
+            return calendar_error("No LLM endpoint configured")
 
         now = datetime.now()
         now_iso = now.strftime("%Y-%m-%dT%H:%M:%S")
@@ -1259,20 +1278,29 @@ def setup_calendar_routes() -> APIRouter:
                 timeout=20,
             )
         except Exception as e:
-            return {"ok": False, "error": f"LLM call failed: {e}"}
+            logger.warning("calendar quick-parse LLM call failed: %s", e)
+            return calendar_error("LLM call failed")
 
         cleaned = strip_think(raw or "", prose=False, prompt_echo=True)
         cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=_re.MULTILINE).strip()
         m = _re.search(r"\{[\s\S]*\}", cleaned)
         if not m:
-            return {"ok": False, "error": "Could not extract JSON", "raw": cleaned[:400]}
+            logger.warning(
+                "calendar quick-parse: no JSON in LLM output (%d chars)",
+                len(cleaned),
+            )
+            return calendar_error("Could not extract JSON")
         try:
             parsed = _json.loads(m.group())
         except Exception as e:
-            return {"ok": False, "error": f"Invalid JSON: {e}", "raw": cleaned[:400]}
+            logger.warning("calendar quick-parse JSON parse failed: %s", e)
+            return calendar_error("Invalid JSON")
+        if not isinstance(parsed, dict):
+            return calendar_error("Invalid JSON")
 
         # Light validation / defaults so the frontend can trust the shape.
-        summary = (parsed.get("summary") or text)[:200]
+        summary_raw = parsed.get("summary")
+        summary = (summary_raw if isinstance(summary_raw, str) and summary_raw.strip() else text)[:200]
         # Strip stale relative/absolute time tokens that the LLM (or the
         # user's raw input) sometimes leaks into the summary — these
         # would otherwise be displayed verbatim in reminder notifications
@@ -1284,8 +1312,10 @@ def setup_calendar_routes() -> APIRouter:
         summary = _re.sub(r'\s+@\s+(?=\d)', ' ', summary)  # drop "@" when right before a time
         summary = _re.sub(r'\s+', ' ', summary).strip(' -—,@')
         all_day = bool(parsed.get("all_day"))
-        dtstart = (parsed.get("dtstart") or "").strip()
-        dtend   = (parsed.get("dtend") or "").strip()
+        dtstart_raw = parsed.get("dtstart")
+        dtend_raw = parsed.get("dtend")
+        dtstart = dtstart_raw.strip() if isinstance(dtstart_raw, str) else ""
+        dtend = dtend_raw.strip() if isinstance(dtend_raw, str) else ""
         # Force naive-local on LLM output. The model is anchored on the
         # user's local "now" via the system prompt, so its emitted
         # datetime is already meant to be the user's wall-clock time.
@@ -1307,7 +1337,7 @@ def setup_calendar_routes() -> APIRouter:
         dtstart = _strip_tz(dtstart)
         dtend   = _strip_tz(dtend)
         if not dtstart:
-            return {"ok": False, "error": "Model did not produce a start time", "raw": cleaned[:400]}
+            return calendar_error("Model did not produce a start time")
         if not dtend:
             # Auto-fill +60 min for timed events; +0 for all-day (single-day).
             try:
@@ -1319,6 +1349,13 @@ def setup_calendar_routes() -> APIRouter:
             except Exception:
                 dtend = dtstart
 
+        loc_raw = parsed.get("location")
+        desc_raw = parsed.get("description")
+        try:
+            _confidence = float(parsed.get("confidence", 0.7) or 0.7)
+        except (TypeError, ValueError):
+            _confidence = 0.7
+
         return {
             "ok": True,
             "event": {
@@ -1326,10 +1363,10 @@ def setup_calendar_routes() -> APIRouter:
                 "dtstart": dtstart,
                 "dtend": dtend,
                 "all_day": all_day,
-                "location": (parsed.get("location") or "").strip()[:200],
-                "description": (parsed.get("description") or "").strip()[:2000],
+                "location": (loc_raw.strip()[:200] if isinstance(loc_raw, str) else ""),
+                "description": (desc_raw.strip()[:2000] if isinstance(desc_raw, str) else ""),
             },
-            "confidence": float(parsed.get("confidence", 0.7) or 0.7),
+            "confidence": _confidence,
         }
 
     return router
