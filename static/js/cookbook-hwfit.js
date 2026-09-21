@@ -1719,8 +1719,9 @@ export function _hwfitInit() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ host, ssh_port: port || undefined }),
           });
-          const data = await res.json();
-          if (data.ok) {
+          let data = {};
+          try { data = await res.json(); } catch (_) {}
+          if (res.ok && data.ok) {
             setupBtn.textContent = '\u2713 Done';
             setupBtn.style.color = '#50fa7b';
             uiModule.showToast(`Setup complete (${data.platform})`);

@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 
 from src.auth_helpers import require_user
 from pydantic import BaseModel
@@ -50,6 +51,19 @@ _HF_TOKEN_STATUS_SNIPPET = (
     'Add one in Odysseus Settings -> Cookbook -> HuggingFace Token."; '
     'fi'
 )
+
+
+def cookbook_error(message: str, status_code: int = 502, **extra) -> JSONResponse:
+    """Return a cookbook probe failure without disguising it as HTTP 200.
+
+    The JSON body stays `{ok: false, error}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a request actually failed instead of treating HTTP 200 as success.
+    """
+    body = {"ok": False, "error": message}
+    body.update(extra)
+    return JSONResponse(body, status_code=status_code)
+
 
 def setup_cookbook_routes() -> APIRouter:
     router = APIRouter(tags=["cookbook"])
@@ -1343,12 +1357,16 @@ def setup_cookbook_routes() -> APIRouter:
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
             output = stdout.decode() + stderr.decode()
-            ok = "OK" in output
-            return {"ok": ok, "output": output.strip(), "platform": platform}
+            if "OK" not in output:
+                logger.warning("cookbook setup failed on %s: %s", platform, output.strip()[:500])
+                return cookbook_error("Setup failed", platform=platform)
+            return {"ok": True, "output": output.strip(), "platform": platform}
         except asyncio.TimeoutError:
-            return {"ok": False, "error": "Setup timed out (120s)", "platform": platform}
+            logger.warning("cookbook setup timed out on %s", platform)
+            return cookbook_error("Setup timed out (120s)", platform=platform)
         except Exception as e:
-            return {"ok": False, "error": str(e), "platform": platform}
+            logger.warning("cookbook setup failed on %s: %s", platform, e)
+            return cookbook_error("Setup failed", platform=platform)
 
     # ── GPU availability probe ──
 
@@ -1372,7 +1390,8 @@ def setup_cookbook_routes() -> APIRouter:
             return None, "nvidia-smi timed out"
         if proc.returncode != 0:
             err = (stderr.decode("utf-8", errors="replace") or "").strip()[:200]
-            return None, err or "nvidia-smi failed"
+            logger.warning("nvidia-smi failed: %s", err or proc.returncode)
+            return None, "nvidia-smi failed"
         return stdout.decode("utf-8", errors="replace"), None
 
     async def _run_gpu_shell(cmd_text: str, host: str | None, ssh_port: str | None, timeout: int = 8):
@@ -1527,7 +1546,8 @@ def setup_cookbook_routes() -> APIRouter:
             nvidia_error = "nvidia-smi not found"
             gpu_out = ""
         except Exception as e:
-            nvidia_error = str(e)[:200]
+            logger.warning("nvidia-smi probe failed: %s", e)
+            nvidia_error = "GPU probe failed"
             gpu_out = ""
 
         gpus = []
@@ -1618,7 +1638,6 @@ def setup_cookbook_routes() -> APIRouter:
                         "backend": "metal",
                         "source": "apple-metal",
                         "fallback_from": "nvidia-smi",
-                        "nvidia_error": nvidia_error,
                     }
             except Exception as e:
                 logger.warning("Apple Metal GPU fallback failed: %s", e)
@@ -1631,7 +1650,6 @@ def setup_cookbook_routes() -> APIRouter:
                 "backend": "rocm",
                 "source": "amd-sysfs",
                 "fallback_from": "nvidia-smi",
-                "nvidia_error": nvidia_error,
             }
 
         processes = await _probe_gpu_device_processes(host, ssh_port)
@@ -1647,10 +1665,10 @@ def setup_cookbook_routes() -> APIRouter:
                 "backend": "generic",
                 "source": "gpu-devices",
                 "fallback_from": "nvidia-smi",
-                "nvidia_error": nvidia_error,
             }
 
-        return {"ok": False, "error": nvidia_error or "No GPU memory probe available", "gpus": []}
+        logger.warning("cookbook GPU probe unavailable: %s", nvidia_error)
+        return cookbook_error("No GPU memory probe available", gpus=[])
 
     class KillPidRequest(BaseModel):
         pid: int
