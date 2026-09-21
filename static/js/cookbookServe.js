@@ -896,6 +896,7 @@ function _rerenderCachedModels() {
           }
           const res = await fetch('/api/cookbook/gpus' + (params.toString() ? '?' + params : ''));
           const data = await res.json();
+          if (!res.ok || data.ok === false) { el.textContent = 'unavailable'; el.style.color = ''; return true; }
           const gpus = Array.isArray(data) ? data : (data.gpus || []);
           if (!gpus.length) { el.textContent = 'no GPU detected'; el.style.color = ''; return true; }
           const g = gpus[0];
