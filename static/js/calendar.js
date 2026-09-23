@@ -2495,11 +2495,26 @@ async function _showCalSettings() {
     delBtn.addEventListener('click', async () => {
       const name = nameInput.value;
       if (!await window.styledConfirm(`Delete calendar "${name}" and all its events?`, { confirmText: 'Delete', danger: true })) return;
-      await fetch(`${API_BASE}/api/calendar/calendars/${id}`, { method: 'DELETE' });
-      row.remove();
-      _allEvents = {}; _fetchedRanges = []; localStorage.removeItem(LS_KEY);
-      _calendars = _calendars.filter(c => c.href !== id);
-      _render();
+      delBtn.disabled = true;
+      try {
+        const res = await fetch(`${API_BASE}/api/calendar/calendars/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          const reason = (data && (data.error || data.detail)) || 'Failed to delete calendar';
+          if (window.showError) window.showError(reason);
+          else console.error('Calendar delete failed', res.status, data);
+          delBtn.disabled = false;
+          return;
+        }
+        row.remove();
+        _allEvents = {}; _fetchedRanges = []; localStorage.removeItem(LS_KEY);
+        _calendars = _calendars.filter(c => c.href !== id);
+        _render();
+      } catch (err) {
+        delBtn.disabled = false;
+        if (window.showError) window.showError(err.message || 'Failed to delete calendar');
+        else console.error(err);
+      }
     });
   });
 

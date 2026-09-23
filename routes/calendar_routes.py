@@ -6,6 +6,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional, List, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import or_, and_
 from dateutil.rrule import rrulestr, rruleset
@@ -15,6 +16,19 @@ from core.database import SessionLocal, CalendarCal, CalendarEvent
 from src.auth_helpers import get_current_user, require_user
 
 logger = logging.getLogger(__name__)
+
+
+def calendar_error(message: str, status_code: int = 502) -> JSONResponse:
+    """Return a calendar API failure without disguising it as HTTP 200.
+
+    The JSON body stays `{ok: false, error}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a request actually failed instead of treating HTTP 200 as success.
+    """
+    return JSONResponse(
+        {"ok": False, "error": message},
+        status_code=status_code,
+    )
 
 
 def _ics_naive_dtstart(dt):
@@ -989,7 +1003,8 @@ def setup_calendar_routes() -> APIRouter:
             raise
         except Exception as e:
             db.rollback()
-            return {"error": str(e)}
+            logger.error("Failed to delete calendar: %s", e)
+            return calendar_error("Failed to delete calendar", status_code=500)
         finally:
             db.close()
 
