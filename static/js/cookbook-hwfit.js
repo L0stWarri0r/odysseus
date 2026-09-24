@@ -1498,8 +1498,10 @@ export function _hwfitInit() {
       method: generate ? 'POST' : 'GET',
       credentials: 'same-origin',
     });
-    const data = await res.json();
-    if (generate && !data.ok) throw new Error(data.error || 'Failed to generate SSH key');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || (generate && !data.ok)) {
+      throw new Error((data && data.error) || 'Failed to generate SSH key');
+    }
     return (data.public_key || '').trim();
   }
 

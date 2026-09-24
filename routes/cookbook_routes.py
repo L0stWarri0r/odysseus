@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 
 from src.auth_helpers import require_user
 from pydantic import BaseModel
@@ -50,6 +51,21 @@ _HF_TOKEN_STATUS_SNIPPET = (
     'Add one in Odysseus Settings -> Cookbook -> HuggingFace Token."; '
     'fi'
 )
+
+_SSH_KEY_ERROR = "Failed to generate SSH key"
+
+
+def cookbook_error(message: str, status_code: int = 502, **extra) -> JSONResponse:
+    """Return a cookbook probe failure without disguising it as HTTP 200.
+
+    The JSON body stays `{ok: false, error}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a request actually failed instead of treating HTTP 200 as success.
+    """
+    body = {"ok": False, "error": message}
+    body.update(extra)
+    return JSONResponse(body, status_code=status_code)
+
 
 def setup_cookbook_routes() -> APIRouter:
     router = APIRouter(tags=["cookbook"])
@@ -273,26 +289,39 @@ def setup_cookbook_routes() -> APIRouter:
         require_admin(request)
         ssh_dir = _cookbook_ssh_dir()
         key_path = _cookbook_ssh_key_path()
-        ssh_dir.mkdir(parents=True, exist_ok=True)
-        # safe_chmod no-ops on Windows (~/.ssh is already ACL-restricted to the
-        # user profile); applies 0o700 on POSIX.
-        safe_chmod(ssh_dir, 0o700)
-        if not key_path.exists():
-            # ssh-keygen ships with the OpenSSH client on Win10+; resolve it via
-            # which_tool so the .exe is found even when PATHEXT is unusual.
-            ssh_keygen = which_tool("ssh-keygen") or "ssh-keygen"
-            proc = await asyncio.create_subprocess_exec(
-                ssh_keygen, "-t", "ed25519", "-N", "", "-C", "odysseus-cookbook", "-f", str(key_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                detail = (stderr or stdout).decode("utf-8", errors="replace").strip()[-500:]
-                return {"ok": False, "error": detail or "Failed to generate SSH key"}
-        safe_chmod(key_path, 0o600)
-        safe_chmod(key_path.with_suffix(".pub"), 0o644)
-        return {"ok": True, "public_key": _read_cookbook_public_key()}
+        try:
+            ssh_dir.mkdir(parents=True, exist_ok=True)
+            # safe_chmod no-ops on Windows (~/.ssh is already ACL-restricted to the
+            # user profile); applies 0o700 on POSIX.
+            safe_chmod(ssh_dir, 0o700)
+            if not key_path.exists():
+                # ssh-keygen ships with the OpenSSH client on Win10+; resolve it via
+                # which_tool so the .exe is found even when PATHEXT is unusual.
+                ssh_keygen = which_tool("ssh-keygen") or "ssh-keygen"
+                proc = await asyncio.create_subprocess_exec(
+                    ssh_keygen, "-t", "ed25519", "-N", "", "-C", "odysseus-cookbook", "-f", str(key_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    detail = (stderr or stdout).decode("utf-8", errors="replace").strip()
+                    logger.warning(
+                        "cookbook ssh-keygen failed (rc=%s): %s",
+                        proc.returncode,
+                        detail[-500:],
+                    )
+                    return cookbook_error(_SSH_KEY_ERROR)
+            safe_chmod(key_path, 0o600)
+            safe_chmod(key_path.with_suffix(".pub"), 0o644)
+            public_key = _read_cookbook_public_key()
+            if not public_key:
+                logger.warning("cookbook SSH public key missing after generation")
+                return cookbook_error(_SSH_KEY_ERROR)
+            return {"ok": True, "public_key": public_key}
+        except Exception as exc:
+            logger.warning("cookbook SSH key generation failed: %s", exc)
+            return cookbook_error(_SSH_KEY_ERROR)
 
     def _user_shell_path_bootstrap() -> list[str]:
         return [
