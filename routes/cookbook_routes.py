@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 
 from src.auth_helpers import require_user
 from pydantic import BaseModel
@@ -50,6 +51,21 @@ _HF_TOKEN_STATUS_SNIPPET = (
     'Add one in Odysseus Settings -> Cookbook -> HuggingFace Token."; '
     'fi'
 )
+
+_KILL_PID_ERROR = "Failed to signal process"
+
+
+def cookbook_error(message: str, status_code: int = 502, **extra) -> JSONResponse:
+    """Return a cookbook probe failure without disguising it as HTTP 200.
+
+    The JSON body stays `{ok: false, error}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a request actually failed instead of treating HTTP 200 as success.
+    """
+    body = {"ok": False, "error": message}
+    body.update(extra)
+    return JSONResponse(body, status_code=status_code)
+
 
 def setup_cookbook_routes() -> APIRouter:
     router = APIRouter(tags=["cookbook"])
@@ -1690,7 +1706,7 @@ def setup_cookbook_routes() -> APIRouter:
                 # NB: never use os.kill(pid, 0) to probe here — on Windows that
                 # routes to TerminateProcess and would kill the process.
                 if not pid_alive(req.pid):
-                    return {"ok": False, "error": f"PID {req.pid} is not running"}
+                    return cookbook_error(f"PID {req.pid} is not running", status_code=404)
                 await asyncio.to_thread(kill_process_tree, req.pid)
                 return {"ok": True, "pid": req.pid, "signal": sig}
             else:
@@ -1701,12 +1717,24 @@ def setup_cookbook_routes() -> APIRouter:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
             if proc.returncode != 0:
                 err = (stderr.decode("utf-8", errors="replace") or "").strip()[:200]
-                return {"ok": False, "error": err or f"kill returned {proc.returncode}"}
+                logger.warning(
+                    "cookbook kill-pid failed pid=%s signal=%s host=%s: %s",
+                    req.pid, sig, host or "local", err or proc.returncode,
+                )
+                return cookbook_error(_KILL_PID_ERROR)
             return {"ok": True, "pid": req.pid, "signal": sig}
         except asyncio.TimeoutError:
-            return {"ok": False, "error": "kill command timed out"}
+            logger.warning(
+                "cookbook kill-pid timed out pid=%s signal=%s host=%s",
+                req.pid, sig, host or "local",
+            )
+            return cookbook_error(_KILL_PID_ERROR)
         except Exception as e:
-            return {"ok": False, "error": str(e)[:200]}
+            logger.warning(
+                "cookbook kill-pid failed pid=%s signal=%s host=%s: %s",
+                req.pid, sig, host or "local", e,
+            )
+            return cookbook_error(_KILL_PID_ERROR)
 
     # ── Cookbook state persistence (cross-device sync) ──
 
