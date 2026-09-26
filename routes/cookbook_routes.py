@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 
 from src.auth_helpers import require_user
 from pydantic import BaseModel
@@ -50,6 +51,22 @@ _HF_TOKEN_STATUS_SNIPPET = (
     'Add one in Odysseus Settings -> Cookbook -> HuggingFace Token."; '
     'fi'
 )
+
+_STATE_SAVE_ERROR = "Failed to save cookbook state"
+_STATE_INVALID_ERROR = "Invalid cookbook state"
+
+
+def cookbook_error(message: str, status_code: int = 502, **extra) -> JSONResponse:
+    """Return a cookbook probe failure without disguising it as HTTP 200.
+
+    The JSON body stays `{ok: false, error}` so existing clients that
+    inspect those fields keep working. Callers that only check `response.ok`
+    can tell a request actually failed instead of treating HTTP 200 as success.
+    """
+    body = {"ok": False, "error": message}
+    body.update(extra)
+    return JSONResponse(body, status_code=status_code)
+
 
 def setup_cookbook_routes() -> APIRouter:
     router = APIRouter(tags=["cookbook"])
@@ -1816,8 +1833,13 @@ def setup_cookbook_routes() -> APIRouter:
                 data["tasks"] = incoming_tasks + preserved
             atomic_write_json(str(_cookbook_state_path), _state_for_storage(data, on_disk), indent=2)
             return {"ok": True, "preserved": len(preserved)}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        except HTTPException:
+            raise
+        except json.JSONDecodeError:
+            return cookbook_error(_STATE_INVALID_ERROR, status_code=400)
+        except Exception:
+            logger.exception("cookbook state POST failed")
+            return cookbook_error(_STATE_SAVE_ERROR)
 
     @router.get("/api/cookbook/hf-latest")
     async def hf_latest(vram_gb: float = 0, limit: int = 10, pipeline: str = "text-generation", owner: str = Depends(require_user)):
