@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 
 from src.auth_helpers import require_user
 from pydantic import BaseModel
@@ -30,6 +31,14 @@ from core.platform_compat import (
 from routes.shell_routes import TMUX_LOG_DIR
 
 logger = logging.getLogger(__name__)
+
+
+def cookbook_error(message: str, status_code: int = 502, **extra) -> JSONResponse:
+    """Non-200 cookbook failure. Detail stays in logs; callers may add safe fields."""
+    body = {"ok": False, "error": message}
+    if extra:
+        body.update(extra)
+    return JSONResponse(status_code=status_code, content=body)
 
 from routes.cookbook_helpers import (
     _SSH_PORT_RE, _REMOTE_HOST_RE, _SESSION_ID_RE,
@@ -633,21 +642,28 @@ def setup_cookbook_routes() -> APIRouter:
             # LOCAL Windows: launch the bash wrapper detached; no tmux setup_cmd.
             try:
                 _launch_local_detached(session_id, lines)
-            except Exception as e:
-                logger.error(f"Local detached download launch failed: {e}")
-                return {"ok": False, "error": str(e), "session_id": session_id}
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("Local detached download launch failed")
+                return cookbook_error("Failed to start model download")
         else:
-            proc = await asyncio.create_subprocess_shell(
-                setup_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.wait()
-
-            if proc.returncode != 0:
-                stderr = (await proc.stderr.read()).decode(errors="replace")
-                logger.error(f"Download failed (rc={proc.returncode}): {stderr}")
-                return {"ok": False, "error": stderr, "session_id": session_id}
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    setup_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
+                if proc.returncode != 0:
+                    stderr = (await proc.stderr.read()).decode(errors="replace")
+                    logger.error("Download failed (rc=%s): %s", proc.returncode, stderr)
+                    return cookbook_error("Failed to start model download")
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("Download launch failed")
+                return cookbook_error("Failed to start model download")
 
         # Log to assistant
         try:
@@ -1211,20 +1227,28 @@ def setup_cookbook_routes() -> APIRouter:
             # LOCAL Windows: launch the bash runner detached; no tmux setup_cmd.
             try:
                 _launch_local_detached(session_id, runner_lines)
-            except Exception as e:
-                logger.error(f"Local detached serve launch failed: {e}")
-                return {"ok": False, "error": str(e), "session_id": session_id}
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("Local detached serve launch failed")
+                return cookbook_error("Failed to start model server")
         else:
-            proc = await asyncio.create_subprocess_shell(
-                setup_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.wait()
-
-            if proc.returncode != 0:
-                stderr = (await proc.stderr.read()).decode(errors="replace")
-                return {"ok": False, "error": stderr, "session_id": session_id}
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    setup_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
+                if proc.returncode != 0:
+                    stderr = (await proc.stderr.read()).decode(errors="replace")
+                    logger.error("Serve launch failed (rc=%s): %s", proc.returncode, stderr)
+                    return cookbook_error("Failed to start model server")
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("Serve launch failed")
+                return cookbook_error("Failed to start model server")
 
         # Auto-register a model endpoint so the served model shows up in the model
         # picker with no manual /setup step. Diffusion models get an image
