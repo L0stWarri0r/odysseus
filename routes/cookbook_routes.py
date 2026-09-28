@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 
 from src.auth_helpers import require_user
 from pydantic import BaseModel
@@ -30,6 +31,15 @@ from core.platform_compat import (
 from routes.shell_routes import TMUX_LOG_DIR
 
 logger = logging.getLogger(__name__)
+
+
+def cookbook_error(message: str, status_code: int = 502, **extra) -> JSONResponse:
+    """Non-200 cookbook failure. Detail stays in logs; callers may add safe fields."""
+    body = {"ok": False, "error": message}
+    if extra:
+        body.update(extra)
+    return JSONResponse(status_code=status_code, content=body)
+
 
 from routes.cookbook_helpers import (
     _SSH_PORT_RE, _REMOTE_HOST_RE, _SESSION_ID_RE,
@@ -1820,30 +1830,55 @@ def setup_cookbook_routes() -> APIRouter:
             return {"ok": False, "error": str(e)}
 
     @router.get("/api/cookbook/hf-latest")
-    async def hf_latest(vram_gb: float = 0, limit: int = 10, pipeline: str = "text-generation", owner: str = Depends(require_user)):
+    async def hf_latest(vram_gb: float = 0, limit: int = 10, pipeline: str = "text-generation", search: str = "", owner: str = Depends(require_user)):
         """Fetch latest HuggingFace models, filtered by what fits in available VRAM.
 
         vram_gb: total available VRAM in GB. 0 = no filter (return everything).
         limit:   how many models to return (default 10).
         pipeline: HF pipeline_tag filter (text-generation, text-to-image, etc.).
+        search: optional HuggingFace search string. Empty keeps the trending list.
         """
-        import re
         import httpx
 
-        # Fetch a larger pool so we have enough to filter from (we drop ~80%)
-        pool_size = max(limit * 15, 100)
-        url = (
-            "https://huggingface.co/api/models"
-            f"?sort=trendingScore&direction=-1&limit={pool_size}&filter={pipeline}"
-        )
+        if not re.fullmatch(r"[A-Za-z0-9_-]{0,64}", pipeline or ""):
+            raise HTTPException(400, "Invalid pipeline")
+        search = (search or "").strip()
+        if len(search) > 200 or any(ord(ch) < 32 for ch in search):
+            raise HTTPException(400, "Invalid search")
+        # A hostile limit must not turn into an unbounded HuggingFace fetch.
+        # The Cookbook panel asks for 10; 50 is enough for agent callers.
+        limit = max(1, min(int(limit), 50))
+        # Fetch a larger pool so we have enough to filter from (we drop ~80%).
+        # Default limit=10 still requests 150, matching the previous pool.
+        pool_size = min(max(limit * 15, 100), 200)
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(url)
+            async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
+                params = {
+                    "sort": "trendingScore",
+                    "direction": "-1",
+                    "limit": pool_size,
+                    "filter": pipeline,
+                }
+                if search:
+                    params["search"] = search
+                resp = await client.get(
+                    "https://huggingface.co/api/models",
+                    params=params,
+                )
                 if resp.status_code != 200:
-                    return {"models": [], "error": f"HF API HTTP {resp.status_code}"}
+                    logger.warning("cookbook hf-latest: HuggingFace API HTTP %s", resp.status_code)
+                    return cookbook_error("Failed to load trending models", models=[])
                 raw = resp.json()
-        except Exception as e:
-            return {"models": [], "error": str(e)}
+        except Exception:
+            logger.exception("cookbook hf-latest: failed to fetch HuggingFace models")
+            return cookbook_error("Failed to load trending models", models=[])
+
+        if not isinstance(raw, list):
+            logger.warning(
+                "cookbook hf-latest: unexpected payload type %s",
+                type(raw).__name__,
+            )
+            return cookbook_error("Failed to load trending models", models=[])
 
         # Estimate VRAM from the model id. Looks for patterns like "7B", "70B", "1.5B" etc.
         # Returns approx VRAM in GB at fp16 (params*2). Caller adjusts for quant.
@@ -1893,11 +1928,14 @@ def setup_cookbook_routes() -> APIRouter:
 
         out = []
         for entry in raw:
-            repo_id = entry.get("modelId") or entry.get("id") or ""
-            if not repo_id:
+            if not isinstance(entry, dict):
                 continue
-            tags = entry.get("tags") or []
-            pipeline_tag = entry.get("pipeline_tag") or ""
+            repo_id = entry.get("modelId") or entry.get("id") or ""
+            if not isinstance(repo_id, str) or not repo_id:
+                continue
+            tags = entry.get("tags") if isinstance(entry.get("tags"), list) else []
+            tags = [t for t in tags if isinstance(t, str)]
+            pipeline_tag = entry.get("pipeline_tag") if isinstance(entry.get("pipeline_tag"), str) else ""
 
             # Hard filter: only the requested pipeline (HF's filter param is loose)
             if pipeline and pipeline_tag and pipeline_tag != pipeline:
