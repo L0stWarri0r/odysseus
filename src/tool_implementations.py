@@ -3301,8 +3301,17 @@ async def do_search_hf_models(content: str, owner: Optional[str] = None) -> Dict
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(f"{_COOKBOOK_BASE}/api/cookbook/hf-latest",
                                     params=params, headers=_internal_headers())
-            data = resp.json()
-        models = data.get("models") if isinstance(data, dict) else data
+            try:
+                data = resp.json()
+            except Exception:
+                data = None
+        if resp.status_code >= 400 or not isinstance(data, dict):
+            logger.warning("search_hf_models: cookbook hf-latest HTTP %s", resp.status_code)
+            return {"error": "Failed to load trending models", "exit_code": 1}
+        models = data.get("models") if isinstance(data.get("models"), list) else []
+        if data.get("error") and not models:
+            logger.warning("search_hf_models: cookbook hf-latest failed")
+            return {"error": "Failed to load trending models", "exit_code": 1}
         if not models:
             return {"output": f"No models found for query: {query!r}", "exit_code": 0}
         lines = [f"Found {len(models)} model(s) for {query!r}:" if query else f"{len(models)} model(s):"]
@@ -3321,8 +3330,9 @@ async def do_search_hf_models(content: str, owner: Optional[str] = None) -> Dict
             else:
                 lines.append(f"- {m}")
         return {"output": "\n".join(lines), "models": models, "exit_code": 0}
-    except Exception as e:
-        return {"error": str(e), "exit_code": 1}
+    except Exception:
+        logger.exception("search_hf_models failed")
+        return {"error": "Failed to load trending models", "exit_code": 1}
 
 
 async def do_adopt_served_model(content: str, owner: Optional[str] = None) -> Dict:
