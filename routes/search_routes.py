@@ -4,6 +4,7 @@ import logging
 from typing import Dict, Any
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 import time
 
@@ -12,6 +13,17 @@ from services.search.core import _call_provider
 from services.search.providers import _get_provider_key, _get_search_instance
 
 logger = logging.getLogger(__name__)
+
+
+def search_error(message: str, status_code: int = 502, **fields) -> JSONResponse:
+    """Client-facing search failure. ``message`` is a fixed sentence.
+
+    Provider exceptions can include the request URL. Google Programmable
+    Search puts the API key in that URL, so ``str(e)`` must stay in the log.
+    """
+    body = dict(fields)
+    body["error"] = message
+    return JSONResponse(status_code=status_code, content=body)
 
 
 async def _request_values(request: Request) -> Dict[str, Any]:
@@ -52,7 +64,7 @@ def setup_search_routes(config) -> APIRouter:
         values = await _request_values(request)
         query = str(values.get("query") or values.get("q") or "").strip()
         if not query:
-            return {"context": "", "sources": [], "error": "query is required"}
+            return search_error("query is required", 400, context="", sources=[])
         time_filter = values.get("time_filter") or values.get("freshness")
         if time_filter is not None:
             time_filter = str(time_filter).strip() or None
@@ -61,9 +73,9 @@ def setup_search_routes(config) -> APIRouter:
                 query, return_sources=True, time_filter=time_filter,
             )
             return {"context": context, "sources": sources}
-        except Exception as e:
-            logger.error(f"Standalone web search failed: {e}")
-            return {"context": "", "sources": [], "error": str(e)}
+        except Exception:
+            logger.exception("Standalone web search failed")
+            return search_error("Search failed", 502, context="", sources=[])
 
     @router.get("/api/search/providers")
     async def list_search_providers():
@@ -95,17 +107,23 @@ def setup_search_routes(config) -> APIRouter:
         except Exception:
             count = 10
         if not query:
-            return {"results": [], "provider": provider, "error": "query is required"}
+            return search_error(
+                "query is required", 400, results=[], provider=provider,
+            )
         if provider not in PROVIDER_INFO or provider == "disabled":
-            return {"results": [], "provider": provider, "error": "Unknown provider"}
+            return search_error(
+                "Unknown provider", 400, results=[], provider=provider,
+            )
         t0 = time.time()
         try:
             results = _call_provider(provider, query, min(count, 20))
             elapsed = round(time.time() - t0, 2)
             return {"results": results, "provider": provider, "time": elapsed}
-        except Exception as e:
+        except Exception:
             elapsed = round(time.time() - t0, 2)
-            logger.error(f"Search provider {provider} failed: {e}")
-            return {"results": [], "provider": provider, "time": elapsed, "error": str(e)}
+            logger.exception("Search provider %s failed", provider)
+            return search_error(
+                "Search failed", 502, results=[], provider=provider, time=elapsed,
+            )
 
     return router
