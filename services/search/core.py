@@ -297,7 +297,10 @@ def comprehensive_web_search(
         if search_results:
             break
         if last_err is not None:
-            provider_attempts[provider_name] = f"error: {last_err}"
+            # last_err can be an HTTPStatusError whose message includes the
+            # request URL. Google PSE puts the API key in that URL, and this
+            # string is returned to Compare and the agent as search context.
+            provider_attempts[provider_name] = "error"
         elif empty:
             provider_attempts[provider_name] = "empty"
 
