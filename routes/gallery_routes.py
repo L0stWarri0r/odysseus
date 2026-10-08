@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
@@ -27,6 +28,17 @@ def _sanitize_gallery_filename(filename: str) -> str:
     if not safe_name or safe_name in {".", ".."}:
         safe_name = uuid.uuid4().hex[:12]
     return safe_name
+
+
+def gallery_error(message: str, status_code: int = 502, **extra):
+    """JSON error for gallery image tools.
+
+    Unexpected failures must not be HTTP 200 with ``str(exception)``.
+    Connection and JSON errors can include the image endpoint URL.
+    """
+    body = {"error": message}
+    body.update(extra)
+    return JSONResponse(status_code=status_code, content=body)
 
 def setup_gallery_routes() -> APIRouter:
     router = APIRouter(tags=["gallery"])
@@ -278,8 +290,9 @@ def setup_gallery_routes() -> APIRouter:
                     return {"image": data.get("data", [{}])[0].get("b64_json", "")}
                 # Fallback: no upscale endpoint — return error
                 return {"error": f"Upscale endpoint not available ({resp.status_code})"}
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            logger.exception("Gallery AI upscale failed")
+            return gallery_error("Upscale failed")
 
     # ---- POST /api/gallery/style-transfer ----
     @router.post("/api/gallery/style-transfer")
@@ -324,8 +337,9 @@ def setup_gallery_routes() -> APIRouter:
                     if img_data:
                         return {"image": img_data}
                 return {"error": f"Style transfer failed ({resp.status_code})"}
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            logger.exception("Gallery style transfer failed")
+            return gallery_error("Style transfer failed")
 
     # ---- GET /api/gallery/tags ----
     @router.get("/api/gallery/tags")
