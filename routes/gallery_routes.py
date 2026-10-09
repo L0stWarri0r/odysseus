@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
@@ -27,6 +28,18 @@ def _sanitize_gallery_filename(filename: str) -> str:
     if not safe_name or safe_name in {".", ".."}:
         safe_name = uuid.uuid4().hex[:12]
     return safe_name
+
+
+def gallery_error(message: str, status_code: int = 502, **extra):
+    """JSON error for gallery image tools.
+
+    Unexpected failures must not be HTTP 200 with ``str(exception)``.
+    Connection and JSON errors can include the image endpoint URL.
+    """
+    body = {"error": message}
+    body.update(extra)
+    return JSONResponse(status_code=status_code, content=body)
+
 
 def setup_gallery_routes() -> APIRouter:
     router = APIRouter(tags=["gallery"])
@@ -1376,9 +1389,9 @@ def setup_gallery_routes() -> APIRouter:
             buf = io.BytesIO()
             out_img.save(buf, format="PNG")
             return {"image": base64.b64encode(buf.getvalue()).decode()}
-        except Exception as e:
-            logger.warning(f"Denoise failed: {e}")
-            return {"error": f"Denoise failed: {e}"}
+        except Exception:
+            logger.exception("Local image denoise failed")
+            return gallery_error("Denoise failed")
 
     # ---- POST /api/image/upscale-local ----
     # Local Real-ESRGAN upscale (2× or 4×). Self-contained — no diffusion
@@ -1423,9 +1436,9 @@ def setup_gallery_routes() -> APIRouter:
             buf = io.BytesIO()
             out_img.save(buf, format="PNG")
             return {"image": base64.b64encode(buf.getvalue()).decode()}
-        except Exception as e:
-            logger.warning(f"Upscale failed: {e}")
-            return {"error": f"Upscale failed: {e}"}
+        except Exception:
+            logger.exception("Local image upscale failed")
+            return gallery_error("Upscale failed")
 
     # ---- POST /api/image/remove-bg ----
     @router.post("/api/image/remove-bg")
