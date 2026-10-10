@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
@@ -27,6 +28,18 @@ def _sanitize_gallery_filename(filename: str) -> str:
     if not safe_name or safe_name in {".", ".."}:
         safe_name = uuid.uuid4().hex[:12]
     return safe_name
+
+
+def gallery_error(message: str, status_code: int = 502, **extra):
+    """JSON error for gallery image tools.
+
+    Unexpected failures must not be HTTP 200 with ``str(exception)``.
+    Connection and JSON errors can include the image endpoint URL.
+    """
+    body = {"error": message}
+    body.update(extra)
+    return JSONResponse(status_code=status_code, content=body)
+
 
 def setup_gallery_routes() -> APIRouter:
     router = APIRouter(tags=["gallery"])
@@ -1778,9 +1791,14 @@ def setup_gallery_routes() -> APIRouter:
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(chat_url, json=payload, headers=h)
                 if resp.status_code != 200:
-                    body = resp.text[:500]
-                    logger.error(f"Vision model {resp.status_code}: {body}")
-                    return {"error": f"Vision model returned {resp.status_code}: {body[:200]}"}
+                    # Upstream bodies can include request ids, key fragments,
+                    # and internal hosts. Keep the status, drop the body.
+                    logger.error(
+                        "Vision model returned %s: %s",
+                        resp.status_code,
+                        (resp.text or "")[:500],
+                    )
+                    return {"error": f"Vision model returned {resp.status_code}"}
                 data = resp.json()
                 # Anthropic returns content[0].text, OpenAI returns choices[0].message.content
                 if provider == "anthropic":
@@ -1796,9 +1814,9 @@ def setup_gallery_routes() -> APIRouter:
             return {"ok": True, "ai_tags": tag_str}
         except HTTPException:
             raise
-        except Exception as e:
-            logger.error(f"AI tagging failed: {e}")
-            return {"error": str(e)}
+        except Exception:
+            logger.exception("AI tagging failed")
+            return gallery_error("AI tagging failed")
         finally:
             db.close()
 
