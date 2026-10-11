@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
@@ -19,6 +20,17 @@ from routes.gallery_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def gallery_error(message: str, status_code: int = 502, **extra):
+    """JSON error for gallery image tools.
+
+    Unexpected failures must not be HTTP 200 with ``str(exception)``.
+    Connection and JSON errors can include the image endpoint URL.
+    """
+    body = {"error": message}
+    body.update(extra)
+    return JSONResponse(status_code=status_code, content=body)
 
 
 def _sanitize_gallery_filename(filename: str) -> str:
@@ -1583,8 +1595,9 @@ def setup_gallery_routes() -> APIRouter:
             buf = io.BytesIO()
             enhanced.save(buf, format="PNG")
             return {"image": base64.b64encode(buf.getvalue()).decode(), "method": "pil"}
-        except Exception as e:
-            raise HTTPException(500, f"Face enhancement failed: {str(e)}")
+        except Exception:
+            logger.exception("Face enhancement failed")
+            return gallery_error("Face enhancement failed")
 
     # ---- Album management (path-param routes) ----
 
