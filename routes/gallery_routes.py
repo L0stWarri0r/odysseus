@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
@@ -27,6 +28,14 @@ def _sanitize_gallery_filename(filename: str) -> str:
     if not safe_name or safe_name in {".", ".."}:
         safe_name = uuid.uuid4().hex[:12]
     return safe_name
+
+
+def gallery_error(message: str, status_code: int = 502, **extra):
+    """JSON error for gallery routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
+
 
 def setup_gallery_routes() -> APIRouter:
     router = APIRouter(tags=["gallery"])
@@ -730,9 +739,15 @@ def setup_gallery_routes() -> APIRouter:
                     cleared += 1
             db.commit()
             return {"ok": True, "cleared": cleared}
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(500, str(e))
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Gallery clear-user-tags failed")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Gallery clear-user-tags rollback failed")
+            return gallery_error("Clear user tags failed")
         finally:
             db.close()
 
@@ -794,9 +809,15 @@ def setup_gallery_routes() -> APIRouter:
                     img.tags = ', '.join(cleaned)
             db.commit()
             return {"ok": True, "rows_touched": rows_touched, "tags_removed": tags_removed}
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(500, str(e))
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Gallery dedupe-tags failed")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Gallery dedupe-tags rollback failed")
+            return gallery_error("Dedupe tags failed")
         finally:
             db.close()
 
