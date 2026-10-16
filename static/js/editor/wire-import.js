@@ -106,6 +106,10 @@ export function wireImport({ container, saveState, createLayer, composite, rende
   document.getElementById('ge-import-gallery')?.addEventListener('click', async () => {
     try {
       const res = await fetch('/api/gallery/library?limit=50', { credentials: 'same-origin' });
+      if (!res.ok) {
+        if (uiModule) uiModule.showToast('Could not load gallery');
+        return;
+      }
       const data = await res.json();
       const items = data.items || [];
       if (!items.length) { if (uiModule) uiModule.showToast('No images in gallery'); return; }

@@ -81,8 +81,8 @@ async function _fetchLibrary(append) {
     _offset = 0;
     // Leave _items untouched until the response arrives — that's the
     // stale-while-revalidate trick that lets the gallery feel instant on
-    // re-open. The new list replaces _items on success below; if the fetch
-    // fails, the previous photos stay visible.
+    // re-open. The new list replaces _items on success below. A thrown
+    // fetch or an error status leaves the previous photos visible.
   }
   const params = new URLSearchParams({ sort: _sort, offset: _offset, limit: _limit });
   if (_sort === 'shuffle') params.set('seed', String(_shuffleSeed));
@@ -93,6 +93,18 @@ async function _fetchLibrary(append) {
   if (_favoritesOnly) params.set('favorites', 'true');
   try {
     const res = await fetch(`${API_BASE}/api/gallery/library?${params}`, { credentials: 'same-origin' });
+    if (!res.ok) {
+      // An error body has no items. Reading it as a library would clear the
+      // grid and can mark the account empty. Do not read or display the body.
+      console.warn('Gallery library returned', res.status);
+      if (_items.length === 0) {
+        const grid = document.getElementById('gallery-grid');
+        if (grid) grid.innerHTML = '<div class="gallery-empty">Could not load photos.</div>';
+        const loadMore = document.getElementById('gallery-load-more');
+        if (loadMore) loadMore.style.display = 'none';
+      }
+      return;
+    }
     const data = await res.json();
     if (append) {
       _items = _items.concat(data.items || []);

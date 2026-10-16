@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
@@ -19,6 +20,13 @@ from routes.gallery_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def gallery_error(message: str, status_code: int = 502, **extra):
+    """JSON error for gallery routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def _sanitize_gallery_filename(filename: str) -> str:
@@ -482,9 +490,15 @@ def setup_gallery_routes() -> APIRouter:
                 "tags": sorted(all_tags),
                 "models": all_models,
             }
-        except Exception as e:
-            logger.error(f"Failed to fetch gallery library: {e}")
-            raise HTTPException(500, f"Failed to fetch gallery library: {e}")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Gallery library failed")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Gallery library rollback failed")
+            return gallery_error("Failed to load gallery library")
         finally:
             db.close()
 
