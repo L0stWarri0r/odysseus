@@ -2249,6 +2249,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     // ── Archive tab state ──
     let _arcSessions = [];
     let _arcDocs = [];        // archived documents
+    let _arcDocsFailed = false;
     let _arcResearch = [];    // archived research reports
     let _arcSearch = '';
     let _arcSort = 'recent';
@@ -2266,13 +2267,17 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       // research — each rendered with its own icon. Load the three in parallel.
       Promise.all([
         fetch(API_BASE + '/api/sessions/archived?limit=100&sort=recent', { credentials: 'same-origin' }).then(r => r.json()).catch(() => ({})),
-        fetch(API_BASE + '/api/documents/library?archived=true&limit=50', { credentials: 'same-origin' }).then(r => r.json()).catch(() => ({})),
+        fetch(API_BASE + '/api/documents/library?archived=true&limit=50', { credentials: 'same-origin' }).then(r => {
+          if (!r.ok) throw new Error('Could not load archived documents');
+          return r.json();
+        }).catch(() => ({ _loadFailed: true })),
         fetch('/api/research/library?archived=true', { credentials: 'same-origin' }).then(r => r.json()).catch(() => ({})),
       ]).then(([s, d, r]) => {
         // These are all archived by definition — flag them so the expanded
         // chat preview hides its (redundant) "Archive" button.
         _arcSessions = (s.sessions || []).map(x => ({ ...x, archived: true }));
-        _arcDocs = d.documents || [];
+        _arcDocsFailed = !!(d && d._loadFailed);
+        _arcDocs = _arcDocsFailed ? [] : (d.documents || []);
         _arcResearch = (r.research || []).map(x => ({ ...x, archived: true }));
         _renderArcGrid();
         _renderArcChips();
@@ -2379,9 +2384,13 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       if (stats) stats.textContent = (filtered.length + filtDocs.length + filtResearch.length) + ' archived';
 
       if (!filtered.length && !filtDocs.length && !filtResearch.length) {
-        // Neutral / no-smile face for "nothing archived here".
-        const _neutralIco = '<span style="vertical-align:-3px;margin-left:6px;">' + uiModule.emptyStateIcon('neutral') + '</span>';
-        grid.innerHTML = '<div class="doclib-empty">No archived items' + _neutralIco + '</div>';
+        if (_arcDocsFailed && _showDocs) {
+          grid.innerHTML = '<div class="doclib-empty">Could not load archived documents.</div>';
+        } else {
+          // Neutral / no-smile face for "nothing archived here".
+          const _neutralIco = '<span style="vertical-align:-3px;margin-left:6px;">' + uiModule.emptyStateIcon('neutral') + '</span>';
+          grid.innerHTML = '<div class="doclib-empty">No archived items' + _neutralIco + '</div>';
+        }
         _appendInlineLoadMore(grid, 0, _arcVisibleLimit, () => {});
         return;
       }
@@ -2433,6 +2442,12 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
         });
         _attachLongPressMenu(card, '._arc-menu');
         grid.appendChild(card);
+      }
+      if (_arcDocsFailed && _showDocs) {
+        const note = document.createElement('div');
+        note.className = 'doclib-empty';
+        note.textContent = 'Could not load archived documents.';
+        grid.appendChild(note);
       }
       // Archived DOCUMENTS — document icon, Restore / Delete.
       const _arcDocIco = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;opacity:0.5;flex-shrink:0;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>';
