@@ -2838,6 +2838,7 @@ async function _renderLibDocuments(grid) {
     const params = new URLSearchParams({ limit: '50', sort: _lib.sort });
     if (_lib.search) params.set('search', _lib.search);
     const res = await fetch(`${API_BASE}/api/documents/library?${params}`);
+    if (!res.ok) throw new Error('Failed to load documents');
     const data = await res.json();
     const docs = data.documents || [];
     const stats = document.getElementById('lib-stats');
