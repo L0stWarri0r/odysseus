@@ -1492,9 +1492,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
             body: fd,
           });
           if (!res.ok) {
-            let _e = `HTTP ${res.status}`;
-            try { const _j = await res.json(); _e = _j.detail || _j.error || _e; } catch {}
-            throw new Error('PDF import failed: ' + _e);
+            throw new Error('PDF import failed');
           }
           imported++;
           continue;
