@@ -3648,6 +3648,7 @@ import * as Modals from './modalManager.js';
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, title: '', content }),
       });
+      if (!res.ok) throw new Error('Failed to create document');
       const doc = await res.json();
       addDocToTabs(doc, sessionId);
       // Set the content into the map so switchToDoc preserves it
@@ -5834,6 +5835,7 @@ import * as Modals from './modalManager.js';
           language: 'markdown',
         }),
       });
+      if (!res.ok) throw new Error('Failed to create document');
       const doc = await res.json();
       addDocToTabs(doc, sessionId);
       if (!isOpen) openPanel();
