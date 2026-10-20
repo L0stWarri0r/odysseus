@@ -8119,6 +8119,7 @@ import * as Modals from './modalManager.js';
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: textarea.value }),
       });
+      if (!res.ok) throw new Error('Failed to save document');
       const doc = await res.json();
       const badge = document.getElementById('doc-version-badge');
       if (badge) { const _v = doc.version_count || 1; badge.textContent = `v${_v}`; badge.style.display = _v > 1 ? '' : 'none'; }
