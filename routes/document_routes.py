@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -29,6 +30,12 @@ def _aggregate_language_facets(lang_rows):
         out[key] = out.get(key, 0) + cnt
     return out
 
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 from routes.document_helpers import (
@@ -608,25 +615,31 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             if req.session_id is not None:
                 # Empty string = unlink from session
                 doc.session_id = req.session_id if req.session_id else None
-                if not req.session_id:
-                    # Tab closed / doc detached from its session — drop the
-                    # in-memory active-doc pointer so the last-resort injection
-                    # path doesn't re-surface this doc in a later chat (#1160).
-                    try:
-                        from src.tool_implementations import clear_active_document
-                        clear_active_document(doc_id)
-                    except Exception:
-                        pass
             db.commit()
+            if req.session_id is not None and not req.session_id:
+                # Unlink is committed. Drop the in-memory active-doc pointer
+                # so a later chat does not re-surface this document (#1160).
+                try:
+                    from src.tool_implementations import clear_active_document
+                    clear_active_document(doc_id)
+                except Exception:
+                    pass
             db.refresh(doc)
             return _doc_to_dict(doc)
         except HTTPException:
             raise
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(500, str(e))
+        except Exception:
+            logger.exception("Failed to update document metadata")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Document metadata update rollback failed")
+            return document_error("Failed to update document metadata")
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                logger.exception("Document metadata update session close failed")
 
     # ---- DELETE /api/document/{doc_id} — soft delete ----
     @router.delete("/api/document/{doc_id}")
