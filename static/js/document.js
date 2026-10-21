@@ -442,12 +442,18 @@ import * as Modals from './modalManager.js';
       if (!_isEditingTabTitle) return;
       const newTitle = input.value.trim();
       _isEditingTabTitle = false;
-      doc.title = newTitle;
-      if (docId === activeDocId) {
-        const titleInput = document.getElementById('doc-title-input');
-        if (titleInput) titleInput.value = newTitle;
+      // An empty title is not sent. Keep the previous local clear for that
+      // case. A non-empty title is written into the tab only after PATCH
+      // succeeds, inside updateTitle.
+      if (!newTitle) {
+        doc.title = newTitle;
+        if (docId === activeDocId) {
+          const titleInput = document.getElementById('doc-title-input');
+          if (titleInput) titleInput.value = newTitle;
+        }
+      } else {
+        updateTitle(docId, newTitle);
       }
-      updateTitle(docId, newTitle);
       renderTabs();
     }
 
@@ -3592,7 +3598,11 @@ import * as Modals from './modalManager.js';
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: '' }),
-      }).then(() => {
+      }).then((res) => {
+        if (!res.ok) {
+          console.error('Failed to unlink document');
+          return;
+        }
         if (toast && uiModule) uiModule.showToast('Document unlinked from session');
       }).catch(() => {});
     } else {
@@ -4321,9 +4331,12 @@ import * as Modals from './modalManager.js';
         _setPdfViewActive(val === 'pdf');
         return;
       }
-      // Mark user explicitly chose a language — stop auto-detection
+      // Mark user explicitly chose a language — stop auto-detection.
+      // Stash the previous flag so a failed PATCH can restore it.
       if (activeDocId && docs.has(activeDocId)) {
-        docs.get(activeDocId).userSetLanguage = (val !== '');
+        const d = docs.get(activeDocId);
+        d._prevUserSetLanguage = !!d.userSetLanguage;
+        d.userSetLanguage = (val !== '');
       }
       updateLanguage();
       syncHighlighting();
@@ -6533,7 +6546,6 @@ import * as Modals from './modalManager.js';
       const langSelect = document.getElementById('doc-language-select');
       if (langSelect && langSelect.value !== 'svg') {
         langSelect.value = 'svg';
-        doc.language = 'svg';
         updateLanguage();
         syncHighlighting();
         _syncHeaderActions();
@@ -6546,7 +6558,6 @@ import * as Modals from './modalManager.js';
       const langSelect = document.getElementById('doc-language-select');
       if (langSelect && langSelect.value !== 'markdown') {
         langSelect.value = 'markdown';
-        doc.language = 'markdown';
         updateLanguage();
         syncHighlighting();
         _syncHeaderActions();
@@ -6568,7 +6579,6 @@ import * as Modals from './modalManager.js';
     if (!langSelect || langSelect.value === mapped) return;
 
     langSelect.value = mapped;
-    doc.language = mapped;
     updateLanguage();
     syncHighlighting();
     _syncHeaderActions();
@@ -9575,21 +9585,28 @@ import * as Modals from './modalManager.js';
   /** Update document title via PATCH */
   async function updateTitle(overrideDocId, overrideTitle) {
     const docId = overrideDocId || activeDocId;
-    if (!docId) return;
+    if (!docId) return false;
     const title = overrideTitle || document.getElementById('doc-title-input')?.value;
-    if (!title) return;
+    if (!title) return false;
     try {
-      await fetch(`${API_BASE}/api/document/${docId}`, {
+      const res = await fetch(`${API_BASE}/api/document/${docId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title }),
       });
+      if (!res.ok) throw new Error('Failed to update document metadata');
       if (docs.has(docId)) {
         docs.get(docId).title = title;
         renderTabs();
       }
-    } catch (e) {
-      console.error('Failed to update title:', e);
+      if (docId === activeDocId) {
+        const titleInput = document.getElementById('doc-title-input');
+        if (titleInput) titleInput.value = title;
+      }
+      return true;
+    } catch (_) {
+      console.error('Failed to update title');
+      return false;
     }
   }
 
@@ -9636,8 +9653,6 @@ import * as Modals from './modalManager.js';
     if (!title) return;
 
     updateTitle(id, title);
-    const titleInput = document.getElementById('doc-title-input');
-    if (titleInput && id === activeDocId) titleInput.value = title;
   }
 
   /** Update document language via PATCH */
@@ -9645,18 +9660,28 @@ import * as Modals from './modalManager.js';
     if (!activeDocId) return;
     const select = document.getElementById('doc-language-select');
     if (!select) return;
+    const doc = docs.get(activeDocId);
+    const next = select.value;
     try {
-      await fetch(`${API_BASE}/api/document/${activeDocId}`, {
+      const res = await fetch(`${API_BASE}/api/document/${activeDocId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ language: select.value }),
+        body: JSON.stringify({ language: next }),
       });
-      if (docs.has(activeDocId)) {
-        docs.get(activeDocId).language = select.value;
+      if (!res.ok) throw new Error('Failed to update document metadata');
+      if (doc) {
+        doc.language = next;
+        delete doc._prevUserSetLanguage;
         renderTabs();
       }
-    } catch (e) {
-      console.error('Failed to update language:', e);
+    } catch (_) {
+      console.error('Failed to update language');
+      if (doc && Object.prototype.hasOwnProperty.call(doc, '_prevUserSetLanguage')) {
+        doc.userSetLanguage = doc._prevUserSetLanguage;
+        delete doc._prevUserSetLanguage;
+      }
+      if (doc && select) select.value = doc.language || '';
+      syncHighlighting();
     }
   }
 
