@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -29,6 +30,12 @@ def _aggregate_language_facets(lang_rows):
         out[key] = out.get(key, 0) + cnt
     return out
 
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 from routes.document_helpers import (
@@ -639,22 +646,30 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 raise HTTPException(404, "Document not found")
             _verify_doc_owner(db, doc, user)
             doc.is_active = False
+            db.commit()
             # Closed/deleted — drop the in-memory active-doc pointer so it isn't
-            # re-injected into a later, unrelated chat (#1160).
+            # re-injected into a later, unrelated chat (#1160). Only after the
+            # soft-delete commits, so a failed delete leaves the pointer in place.
             try:
                 from src.tool_implementations import clear_active_document
                 clear_active_document(doc_id)
             except Exception:
                 pass
-            db.commit()
             return {"status": "deleted", "id": doc_id}
         except HTTPException:
             raise
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(500, str(e))
+        except Exception:
+            logger.exception("Failed to delete document")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Document delete rollback failed")
+            return document_error("Failed to delete document")
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                logger.exception("Document delete session close failed")
 
     # ---- GET /api/document/{doc_id}/versions ----
     @router.get("/api/document/{doc_id}/versions")
