@@ -1160,11 +1160,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     }
     try {
       const res = await fetch(`${API_BASE}/api/document/${docId}`, { method: 'DELETE', credentials: 'same-origin' });
-      if (!res.ok) {
-        let detail = `HTTP ${res.status}`;
-        try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch {}
-        throw new Error(detail);
-      }
+      if (!res.ok) throw new Error('Failed to delete document');
       if (card) {
         card.classList.add('doclib-card-deleting');
         card.addEventListener('transitionend', () => card.remove(), { once: true });
@@ -1174,8 +1170,9 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       _libraryTotal = Math.max(0, _libraryTotal - 1);
       libraryRenderStats();
       if (uiModule) uiModule.showToast('Document deleted');
-    } catch (e) {
-      if (uiModule) uiModule.showError(`Failed to delete document: ${e.message || e}`);
+    } catch {
+      console.error('Failed to delete document');
+      if (uiModule) uiModule.showError('Failed to delete document');
     }
   }
 

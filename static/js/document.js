@@ -3596,7 +3596,11 @@ import * as Modals from './modalManager.js';
         if (toast && uiModule) uiModule.showToast('Document unlinked from session');
       }).catch(() => {});
     } else {
-      fetch(`${API_BASE}/api/document/${docId}`, { method: 'DELETE' }).catch(() => {});
+      fetch(`${API_BASE}/api/document/${docId}`, { method: 'DELETE' }).then((res) => {
+        if (!res.ok) {
+          console.error('Failed to delete document');
+        }
+      }).catch(() => {});
     }
     docs.delete(docId);
     _syncDocIndicator();
