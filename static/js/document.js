@@ -9554,6 +9554,11 @@ import * as Modals from './modalManager.js';
       const res = await fetch(`${API_BASE}/api/document/${activeDocId}/restore/${num}`, {
         method: 'POST',
       });
+      if (!res.ok) {
+        console.error('Failed to restore version');
+        if (uiModule) uiModule.showError('Failed to restore version');
+        return;
+      }
       const doc = await res.json();
       populateEditor(doc);
       // Clear stash — restored content IS the new latest
@@ -9566,8 +9571,8 @@ import * as Modals from './modalManager.js';
       }
       await loadVersionHistory();
       if (uiModule) uiModule.showToast(`Restored to v${num}`);
-    } catch (e) {
-      console.error('Failed to restore version:', e);
+    } catch {
+      console.error('Failed to restore version');
       if (uiModule) uiModule.showError('Failed to restore version');
     }
   }
