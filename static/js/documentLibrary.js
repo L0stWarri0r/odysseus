@@ -3214,11 +3214,18 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
           fetch(`${API_BASE}/api/documents/tidy`, { method: 'POST' }),
           new Promise(r => setTimeout(r, 600)),
         ]);
-        if (res1.ok) {
-          const d1 = await res1.json();
-          totalDeleted += d1.deleted || 0;
-          totalFixed += d1.fixed_titles || 0;
+        if (!res1.ok) {
+          spinner.destroy();
+          console.error('Failed to tidy documents');
+          if (uiModule) uiModule.showToast('Failed to tidy documents');
+          tidyBtn.disabled = false;
+          tidyBtn.classList.remove('spinning');
+          tidyBtn.innerHTML = origHTML;
+          return;
         }
+        const d1 = await res1.json();
+        totalDeleted += d1.deleted || 0;
+        totalFixed += d1.fixed_titles || 0;
 
         // Phase 2: AI tidy (junk/test detection)
         try {
@@ -3240,10 +3247,10 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
           libraryFetch(false);
         }
         setTimeout(() => { tidyBtn.innerHTML = origHTML; tidyBtn.disabled = false; tidyBtn.classList.remove('spinning'); }, 1500);
-      } catch (e) {
+      } catch {
         spinner.destroy();
-        console.error('Document tidy failed:', e);
-        if (uiModule) uiModule.showToast('Tidy failed');
+        console.error('Failed to tidy documents');
+        if (uiModule) uiModule.showToast('Failed to tidy documents');
         tidyBtn.disabled = false;
         tidyBtn.classList.remove('spinning');
         tidyBtn.innerHTML = origHTML;
