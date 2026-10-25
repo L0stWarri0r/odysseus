@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -28,6 +29,13 @@ def _aggregate_language_facets(lang_rows):
         key = lang or "text"
         out[key] = out.get(key, 0) + cnt
     return out
+
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 
@@ -934,12 +942,18 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             }
         except HTTPException:
             raise
-        except Exception as e:
-            db.rollback()
-            logger.error(f"AI tidy failed: {e}")
-            raise HTTPException(500, f"AI tidy failed: {e}")
+        except Exception:
+            logger.exception("Failed to tidy documents with AI")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("AI tidy rollback failed")
+            return document_error("Failed to tidy documents with AI")
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                logger.exception("AI tidy session close failed")
 
     # ---- POST /api/document/{doc_id}/export-pdf/preview ----
     @router.post("/api/document/{doc_id}/export-pdf/preview")
