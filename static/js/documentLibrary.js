@@ -3221,16 +3221,30 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
         }
 
         // Phase 2: AI tidy (junk/test detection)
+        let aiFailed = false;
         try {
           const res2 = await fetch(`${API_BASE}/api/documents/ai-tidy`, { method: 'POST' });
-          if (res2.ok) {
+          if (!res2.ok) {
+            aiFailed = true;
+          } else {
             const d2 = await res2.json();
             totalDeleted += d2.deleted || 0;
             if (d2.message) aiMessage = d2.message;
           }
-        } catch (_) { /* AI tidy is optional */ }
+        } catch (_) {
+          aiFailed = true;
+        }
 
         spinner.destroy();
+
+        if (aiFailed && totalDeleted === 0 && totalFixed === 0) {
+          console.error('Failed to tidy documents with AI');
+          if (uiModule) uiModule.showToast('Failed to tidy documents with AI');
+          tidyBtn.disabled = false;
+          tidyBtn.classList.remove('spinning');
+          tidyBtn.innerHTML = origHTML;
+          return;
+        }
 
         if (totalDeleted === 0 && totalFixed === 0) {
           tidyBtn.innerHTML = '<span style="opacity:0.7">Already tidy</span>';
