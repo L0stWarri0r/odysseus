@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -28,6 +29,13 @@ def _aggregate_language_facets(lang_rows):
         key = lang or "text"
         out[key] = out.get(key, 0) + cnt
     return out
+
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 
@@ -437,11 +445,15 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             if not pdf_path:
                 raise HTTPException(404, "Source PDF could not be located")
 
-            try:
-                body_text = strip_pdf_content_marker(_process_pdf(pdf_path))
-            except Exception as e:
-                logger.error(f"extract_pdf_text failed for {pdf_path}: {e}")
-                raise HTTPException(500, f"Extraction failed: {e}")
+            raw_text = _process_pdf(pdf_path) or ""
+            # _process_pdf swallows its own errors and returns them as text.
+            # Persisting that string would store the exception in the document
+            # and hand it to the editor on the follow-up read.
+            if raw_text.strip().startswith("[PDF processing failed:"):
+                logger.error("Failed to extract PDF text: %s", raw_text.strip())
+                return document_error("Failed to extract PDF text")
+
+            body_text = strip_pdf_content_marker(raw_text)
 
             if not body_text:
                 return {"ok": True, "id": doc_id, "extracted": False, "reason": "No readable content"}
@@ -463,8 +475,20 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             ))
             db.commit()
             return {"ok": True, "id": doc_id, "extracted": True, "chars": len(body_text)}
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to extract PDF text")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("PDF text extraction rollback failed")
+            return document_error("Failed to extract PDF text")
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                logger.exception("PDF text extraction session close failed")
 
     # ---- POST /api/documents/export-zip — bundle selected docs into a .zip ----
     @router.post("/api/documents/export-zip")
