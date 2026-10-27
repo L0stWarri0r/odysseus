@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -28,6 +29,13 @@ def _aggregate_language_facets(lang_rows):
         key = lang or "text"
         out[key] = out.get(key, 0) + cnt
     return out
+
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 
@@ -1307,12 +1315,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             values = parse_markdown_to_values(doc.current_content or "")
             out_path = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False).name
             _to_unlink.append(out_path)
-            try:
-                fill_fields(pdf_path, out_path, values)
-            except Exception as e:
-                logger.error(f"render_pdf fill_fields failed for {doc_id}: {e}")
-                _cleanup_temps()
-                raise HTTPException(500, f"PDF render failed: {e}")
+            fill_fields(pdf_path, out_path, values)
 
             annotations = parse_markdown_annotations(doc.current_content or "")
             if annotations:
@@ -1351,8 +1354,24 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 headers={"Content-Disposition": "inline"},
                 background=BackgroundTask(_cleanup_temps),
             )
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to render PDF")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("PDF render rollback failed")
+            try:
+                _cleanup_temps()
+            except Exception:
+                logger.exception("PDF render temp cleanup failed")
+            return document_error("Failed to render PDF")
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                logger.exception("PDF render session close failed")
 
     # ---- GET /api/document/{doc_id}/export-pdf ----
     @router.get("/api/document/{doc_id}/export-pdf")
