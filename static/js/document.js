@@ -593,8 +593,7 @@ import * as Modals from './modalManager.js';
     try {
       const r = await fetch(`${API_BASE}/api/document/${activeDocId}/export-pdf`);
       if (!r.ok) {
-        const t = await r.text();
-        throw new Error(t || r.statusText);
+        throw new Error('Failed to export PDF');
       }
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
@@ -609,8 +608,8 @@ import * as Modals from './modalManager.js';
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
-      if (uiModule) uiModule.showError('Export failed: ' + e.message);
-      else alert('Export failed: ' + e.message);
+      if (uiModule) uiModule.showError('Failed to export PDF');
+      else alert('Failed to export PDF');
     }
   }
 
@@ -877,8 +876,7 @@ import * as Modals from './modalManager.js';
             body: JSON.stringify({ values, signatures }),
           });
           if (!r.ok) {
-            const t = await r.text();
-            throw new Error(t || r.statusText);
+            throw new Error('Failed to export PDF');
           }
           const blob = await r.blob();
           const url = URL.createObjectURL(blob);
@@ -894,7 +892,7 @@ import * as Modals from './modalManager.js';
           setTimeout(() => URL.revokeObjectURL(url), 1000);
           close();
         } catch (e) {
-          overlay.querySelector('#pdf-export-status').textContent = 'Error: ' + e.message;
+          overlay.querySelector('#pdf-export-status').textContent = 'Failed to export PDF';
           downloadBtn.disabled = false;
         }
       });

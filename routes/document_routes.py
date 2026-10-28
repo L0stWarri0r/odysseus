@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -28,6 +29,13 @@ def _aggregate_language_facets(lang_rows):
         key = lang or "text"
         out[key] = out.get(key, 0) + cnt
     return out
+
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 
@@ -1431,12 +1439,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
 
             filled_path = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False).name
             _to_unlink.append(filled_path)
-            try:
-                fill_fields(pdf_path, filled_path, text_values)
-            except Exception as e:
-                logger.error(f"fill_fields failed for doc {doc_id}: {e}")
-                _cleanup_temps()
-                raise HTTPException(500, f"PDF fill failed: {e}")
+            fill_fields(pdf_path, filled_path, text_values)
 
             out_path = filled_path
             if stamps:
@@ -1488,8 +1491,24 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 filename=download_name,
                 background=BackgroundTask(_cleanup_temps),
             )
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to export PDF")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("PDF export rollback failed")
+            try:
+                _cleanup_temps()
+            except Exception:
+                logger.exception("PDF export temp cleanup failed")
+            return document_error("Failed to export PDF")
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                logger.exception("PDF export session close failed")
 
     # ---- POST /api/document/{doc_id}/prepare-signed-reply ----
     @router.post("/api/document/{doc_id}/prepare-signed-reply")
