@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -28,6 +29,13 @@ def _aggregate_language_facets(lang_rows):
         key = lang or "text"
         out[key] = out.get(key, 0) + cnt
     return out
+
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 
@@ -1522,11 +1530,23 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
         _DATA_DIR = _Path(__file__).resolve().parent.parent / "data"
         _BASE = _os.environ.get("ODYSSEUS_MAIL_ATTACHMENTS_DIR", str(_DATA_DIR / "mail-attachments"))
         _COMPOSE_DIR = _Path(_BASE) / "_compose"
-        _COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
 
         user = get_current_user(request)
         db = SessionLocal()
+        _to_unlink: list[str] = []
+        compose_path = None
+
+        def _cleanup_temps():
+            for _p in _to_unlink:
+                try:
+                    _os.unlink(_p)
+                except FileNotFoundError:
+                    pass
+                except Exception as _e:
+                    logger.warning(f"Could not unlink temp PDF {_p}: {_e}")
+
         try:
+            _COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
             doc = db.query(Document).filter(Document.id == doc_id).first()
             if not doc:
                 raise HTTPException(404, "Document not found")
@@ -1571,8 +1591,6 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                     except Exception:
                         pass
 
-            import os
-            _to_unlink: list[str] = []
             filled_path = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False).name
             _to_unlink.append(filled_path)
             fill_fields(pdf_path, filled_path, text_values)
@@ -1622,16 +1640,11 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             filename = _slug(doc.title or "signed") + "_signed.pdf"
             token = f"{_uuid.uuid4().hex}_{filename}"
             dest = _COMPOSE_DIR / token
-            shutil.copyfile(out_path, str(dest))
+            compose_path = str(dest)
+            shutil.copyfile(out_path, compose_path)
             # Unlink the intermediate temp PDFs now that they've been
             # copied into COMPOSE_UPLOADS_DIR.
-            for _p in _to_unlink:
-                try:
-                    os.unlink(_p)
-                except FileNotFoundError:
-                    pass
-                except Exception as _e:
-                    logger.warning(f"Could not unlink temp PDF {_p}: {_e}")
+            _cleanup_temps()
 
             # 3) Fetch the source email's headers so we can build a clean reply
             #    context (To/Subject/In-Reply-To/References).
@@ -1687,7 +1700,30 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                     "source_message_id": doc.source_email_message_id,
                 },
             }
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to prepare signed reply")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Signed reply rollback failed")
+            try:
+                _cleanup_temps()
+            except Exception:
+                logger.exception("Signed reply temp cleanup failed")
+            if compose_path is not None:
+                try:
+                    _os.unlink(compose_path)
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    logger.exception("Signed reply compose cleanup failed")
+            return document_error("Failed to prepare signed reply")
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                logger.exception("Signed reply session close failed")
 
     return router
