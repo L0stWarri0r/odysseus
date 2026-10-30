@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -29,6 +30,12 @@ def _aggregate_language_facets(lang_rows):
         out[key] = out.get(key, 0) + cnt
     return out
 
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 from routes.document_helpers import (
@@ -1001,8 +1008,20 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 "total": len(fields),
                 "filled": sum(1 for p in preview if p["value"] not in ("", False, None)),
             }
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to load preview")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("PDF preview rollback failed")
+            return document_error("Failed to load preview")
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                logger.exception("PDF preview session close failed")
 
     # ---- GET /api/document/{doc_id}/render-pages ----
     @router.get("/api/document/{doc_id}/render-pages")
