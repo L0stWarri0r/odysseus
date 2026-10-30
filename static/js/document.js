@@ -677,8 +677,7 @@ import * as Modals from './modalManager.js';
     try {
       const res = await fetch(`${API_BASE}/api/document/${activeDocId}/export-pdf/preview`, { method: 'POST' });
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(err || res.statusText);
+        throw new Error('Failed to load preview');
       }
       const data = await res.json();
       fields = data.fields || [];
@@ -900,7 +899,7 @@ import * as Modals from './modalManager.js';
       });
     } catch (e) {
       overlay.querySelector('#pdf-export-body').innerHTML =
-        `<div style="color:#c00;">Failed to load preview: ${(e && e.message) || e}</div>`;
+        '<div style="color:#c00;">Failed to load preview</div>';
     }
   }
 
