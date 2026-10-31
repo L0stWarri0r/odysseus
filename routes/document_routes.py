@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -29,6 +30,12 @@ def _aggregate_language_facets(lang_rows):
         out[key] = out.get(key, 0) + cnt
     return out
 
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 from routes.document_helpers import (
@@ -1019,6 +1026,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
 
         user = get_current_user(request)
         db = SessionLocal()
+        pdf_doc = None
         try:
             doc = db.query(Document).filter(Document.id == doc_id).first()
             if not doc:
@@ -1042,39 +1050,53 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
 
             scale = _PDF_RENDER_SCALE
             pdf_doc = fitz.open(pdf_path)
-            try:
-                pages_out = []
-                for page_index in range(pdf_doc.page_count):
-                    page = pdf_doc[page_index]
-                    page_no = page_index + 1
-                    pw, ph = page.rect.width, page.rect.height
-                    img_w = int(pw * scale)
-                    img_h = int(ph * scale)
-                    fields_out = []
-                    for f in by_page.get(page_no, []):
-                        x0, y0, x1, y1 = f["rect"]
-                        fields_out.append({
-                            "name": f["name"],
-                            "type": f["type"],
-                            "label": f.get("label") or "",
-                            "options": f.get("options") or [],
-                            "value": values.get(f["name"], f.get("value", "")),
-                            "rect_px": [
-                                int(x0 * scale), int(y0 * scale),
-                                int(x1 * scale), int(y1 * scale),
-                            ],
-                        })
-                    pages_out.append({
-                        "page": page_no,
-                        "width": img_w,
-                        "height": img_h,
-                        "fields": fields_out,
+            pages_out = []
+            for page_index in range(pdf_doc.page_count):
+                page = pdf_doc[page_index]
+                page_no = page_index + 1
+                pw, ph = page.rect.width, page.rect.height
+                img_w = int(pw * scale)
+                img_h = int(ph * scale)
+                fields_out = []
+                for f in by_page.get(page_no, []):
+                    x0, y0, x1, y1 = f["rect"]
+                    fields_out.append({
+                        "name": f["name"],
+                        "type": f["type"],
+                        "label": f.get("label") or "",
+                        "options": f.get("options") or [],
+                        "value": values.get(f["name"], f.get("value", "")),
+                        "rect_px": [
+                            int(x0 * scale), int(y0 * scale),
+                            int(x1 * scale), int(y1 * scale),
+                        ],
                     })
-                return {"doc_id": doc_id, "scale": scale, "pages": pages_out}
-            finally:
-                pdf_doc.close()
+                pages_out.append({
+                    "page": page_no,
+                    "width": img_w,
+                    "height": img_h,
+                    "fields": fields_out,
+                })
+            return {"doc_id": doc_id, "scale": scale, "pages": pages_out}
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to load PDF view")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("PDF view rollback failed")
+            return document_error("Failed to load PDF view")
         finally:
-            db.close()
+            if pdf_doc is not None:
+                try:
+                    pdf_doc.close()
+                except Exception:
+                    logger.exception("PDF view document close failed")
+            try:
+                db.close()
+            except Exception:
+                logger.exception("PDF view session close failed")
 
     # ---- GET /api/document/{doc_id}/page/{n}.png ----
     @router.get("/api/document/{doc_id}/page/{page_no}.png")
@@ -1098,12 +1120,25 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             pdf_path = _locate_current_user_upload(request, upload_id, user)
             if not pdf_path:
                 raise HTTPException(404, "Source PDF not found")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to render PDF page")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("PDF page rollback failed")
+            return document_error("Failed to load PDF view")
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                logger.exception("PDF page session close failed")
 
-        fitz = _load_pdf_viewer_fitz()
-        pdf_doc = fitz.open(pdf_path)
+        pdf_doc = None
         try:
+            fitz = _load_pdf_viewer_fitz()
+            pdf_doc = fitz.open(pdf_path)
             if page_no < 1 or page_no > pdf_doc.page_count:
                 raise HTTPException(404, "Page out of range")
             page = pdf_doc[page_no - 1]
@@ -1115,8 +1150,17 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 media_type="image/png",
                 headers={"Cache-Control": "public, max-age=3600"},
             )
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to render PDF page")
+            return document_error("Failed to load PDF view")
         finally:
-            pdf_doc.close()
+            if pdf_doc is not None:
+                try:
+                    pdf_doc.close()
+                except Exception:
+                    logger.exception("PDF page document close failed")
 
     # ---- POST /api/document/{doc_id}/ai-fill-annotations ----
     @router.post("/api/document/{doc_id}/ai-fill-annotations")
