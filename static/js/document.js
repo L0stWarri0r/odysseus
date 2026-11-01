@@ -1767,8 +1767,7 @@ import * as Modals from './modalManager.js';
         body: JSON.stringify({ instruction: instruction.trim() }),
       });
       if (!res.ok) {
-        const t = await res.text().catch(() => res.statusText);
-        throw new Error(t || res.statusText);
+        throw new Error('AI fill failed');
       }
       const data = await res.json();
       const proposed = (data && data.annotations) || [];
@@ -1810,7 +1809,7 @@ import * as Modals from './modalManager.js';
       _renderPdfPane();
     } catch (e) {
       console.error('AI fill failed:', e);
-      _setPdfSaveStatus('error', `AI fill failed: ${e.message || e}`);
+      _setPdfSaveStatus('error', 'AI fill failed');
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = 'AI fill'; }
     }

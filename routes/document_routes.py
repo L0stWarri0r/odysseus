@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import func
 from core.database import SessionLocal, Document, DocumentVersion
@@ -29,6 +30,12 @@ def _aggregate_language_facets(lang_rows):
         out[key] = out.get(key, 0) + cnt
     return out
 
+
+def document_error(message: str, status_code: int = 502, **extra):
+    """JSON error for document routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 from routes.document_helpers import (
@@ -1130,20 +1137,24 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
         """
         import base64
         import json
-        import fitz
         from src.pdf_form_doc import find_source_upload_id
         from src.constants import UPLOAD_DIR
         from src.document_processor import _resolve_vl_model, _load_vl_settings
         from src.llm_core import llm_call_async
 
-        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-        instruction = (body or {}).get("instruction", "").strip()
+        try:
+            body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+            instruction = (body or {}).get("instruction", "").strip()
+        except Exception:
+            logger.exception("Failed to fill annotations")
+            return document_error("Failed to fill annotations")
         if not instruction:
             raise HTTPException(400, "instruction is required")
 
         user = get_current_user(request)
-        db = SessionLocal()
+        db = None
         try:
+            db = SessionLocal()
             doc = db.query(Document).filter(Document.id == doc_id).first()
             if not doc:
                 raise HTTPException(404, "Document not found")
@@ -1154,16 +1165,31 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             pdf_path = _locate_current_user_upload(request, upload_id, user)
             if not pdf_path:
                 raise HTTPException(404, "Source PDF not found")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to fill annotations")
+            if db is not None:
+                try:
+                    db.rollback()
+                except Exception:
+                    logger.exception("AI fill rollback failed")
+            return document_error("Failed to fill annotations")
         finally:
-            db.close()
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    logger.exception("AI fill session close failed")
 
         # Resolve VL model (admin-configured or auto-detected vision-capable)
         settings = _load_vl_settings()
         vl_model = settings.get("vision_model", "")
         try:
             url, model_id, headers = _resolve_vl_model(vl_model)
-        except Exception as e:
-            raise HTTPException(503, f"No vision model available: {e}")
+        except Exception:
+            logger.exception("No vision model available")
+            raise HTTPException(503, "No vision model available") from None
 
         system_prompt = (
             "You analyze rendered PDF page images and propose values to fill in. "
@@ -1178,8 +1204,10 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
         )
 
         all_annotations = []
-        pdf_doc = fitz.open(pdf_path)
+        pdf_doc = None
         try:
+            import fitz
+            pdf_doc = fitz.open(pdf_path)
             for page_index in range(pdf_doc.page_count):
                 page = pdf_doc[page_index]
                 mat = fitz.Matrix(_PDF_RENDER_SCALE, _PDF_RENDER_SCALE)
@@ -1254,10 +1282,18 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                         "h": round(h, 2),
                         "value": value,
                     })
+            return {"annotations": all_annotations}
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to fill annotations")
+            return document_error("Failed to fill annotations")
         finally:
-            pdf_doc.close()
-
-        return {"annotations": all_annotations}
+            if pdf_doc is not None:
+                try:
+                    pdf_doc.close()
+                except Exception:
+                    logger.exception("AI fill document close failed")
 
     # ---- GET /api/document/{doc_id}/render-pdf ----
     @router.get("/api/document/{doc_id}/render-pdf")
