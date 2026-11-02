@@ -325,8 +325,7 @@ async function _saveSignature({ dataUrl, width, height, name }) {
     body: JSON.stringify({ data: dataUrl, width, height, name }),
   });
   if (!r.ok) {
-    const t = await r.text();
-    throw new Error(t || r.statusText);
+    throw new Error('Failed to save signature');
   }
   return await r.json();
 }
@@ -435,7 +434,8 @@ export function capture(opts = {}) {
         setLastUsed(out);
         close(out);
       } catch (e) {
-        alert('Failed to save signature: ' + e.message);
+        console.error('Failed to save signature:', e);
+        alert('Failed to save signature');
         saveBtn.disabled = false;
       }
     };
