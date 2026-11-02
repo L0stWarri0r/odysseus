@@ -13,12 +13,20 @@ import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from core.database import SessionLocal, Signature
 from src.auth_helpers import get_current_user
 
 logger = logging.getLogger(__name__)
+
+
+def signature_error(message: str, status_code: int = 502, **extra):
+    """JSON error for signature routes. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 _DATA_URL_RE = re.compile(
@@ -86,24 +94,36 @@ def setup_signature_routes() -> APIRouter:
             height=req.height,
             svg=req.svg,
         )
-        db = SessionLocal()
+        db = None
         try:
+            db = SessionLocal()
             db.add(sig)
             db.commit()
             db.refresh(sig)
             return _to_dict(sig)
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Failed to save signature: {e}")
-            raise HTTPException(500, f"Failed to save signature: {e}")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to save signature")
+            if db is not None:
+                try:
+                    db.rollback()
+                except Exception:
+                    logger.exception("Signature save rollback failed")
+            return signature_error("Failed to save signature")
         finally:
-            db.close()
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    logger.exception("Signature save session close failed")
 
     @router.delete("/api/signatures/{sig_id}")
     async def delete_signature(sig_id: str, request: Request) -> Dict[str, Any]:
         user = get_current_user(request)
-        db = SessionLocal()
+        db = None
         try:
+            db = SessionLocal()
             sig = db.query(Signature).filter(Signature.id == sig_id).first()
             if not sig:
                 raise HTTPException(404, "Signature not found")
@@ -114,10 +134,19 @@ def setup_signature_routes() -> APIRouter:
             return {"deleted": sig_id}
         except HTTPException:
             raise
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(500, f"Failed to delete signature: {e}")
+        except Exception:
+            logger.exception("Failed to delete signature")
+            if db is not None:
+                try:
+                    db.rollback()
+                except Exception:
+                    logger.exception("Signature delete rollback failed")
+            return signature_error("Failed to delete signature")
         finally:
-            db.close()
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    logger.exception("Signature delete session close failed")
 
     return router
