@@ -4,6 +4,7 @@ import time
 import json
 import asyncio
 from fastapi import APIRouter, Request, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
 from typing import List
 import logging
 from core.middleware import require_admin
@@ -13,6 +14,14 @@ from src.upload_handler import count_recent_uploads
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
+
+
+def vision_error(message: str, status_code: int = 502, **extra):
+    """JSON error for vision text. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
+
 
 def setup_upload_routes(upload_handler):
     """Setup upload routes with the provided handler"""
@@ -210,9 +219,11 @@ def setup_upload_routes(upload_handler):
         from src.document_processor import analyze_image_with_vl
         try:
             text = analyze_image_with_vl(path) or ""
-        except Exception as e:
-            logger.error(f"Vision analysis failed for {file_id}: {e}")
-            raise HTTPException(500, f"Vision analysis failed: {e}")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Vision analysis failed for %s", file_id)
+            return vision_error("Vision analysis failed")
         try:
             with open(cache_path, "w", encoding="utf-8") as f:
                 f.write(text)
