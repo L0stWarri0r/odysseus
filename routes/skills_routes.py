@@ -12,6 +12,7 @@ import re
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from services.memory.skills import SkillsManager
@@ -19,6 +20,13 @@ from src.auth_helpers import get_current_user
 from core.middleware import require_admin
 
 logger = logging.getLogger(__name__)
+
+
+def skill_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one built-in skill. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 class SkillAddRequest(BaseModel):
@@ -1146,8 +1154,11 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
         if one is set, plus the shipped default (for the revert button)."""
         try:
             from src.agent_loop import TOOL_SECTIONS, get_builtin_overrides
-        except Exception as e:
-            raise HTTPException(500, str(e))
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Built-in skill lookup failed for %s", name)
+            return skill_error("Failed to load built-in skill")
         default = None
         for key, raw in TOOL_SECTIONS.items():
             names = key if isinstance(key, tuple) else (key,)
