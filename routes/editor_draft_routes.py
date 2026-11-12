@@ -22,12 +22,20 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from core.database import EditorDraft, SessionLocal
 from src.auth_helpers import get_current_user
 
 logger = logging.getLogger(__name__)
+
+
+def draft_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one editor draft. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 class DraftCreate(BaseModel):
@@ -178,10 +186,18 @@ def setup_editor_draft_routes() -> APIRouter:
             db.commit()
             return {"status": "deleted", "id": draft_id}
         except HTTPException:
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Editor draft delete rollback failed")
             raise
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(500, str(e))
+        except Exception:
+            logger.exception("Editor draft delete failed")
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("Editor draft delete rollback failed")
+            return draft_error("Failed to delete draft")
         finally:
             db.close()
 
