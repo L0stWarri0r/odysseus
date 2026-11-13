@@ -6,6 +6,7 @@ import logging
 from typing import Dict, Any
 
 from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import JSONResponse
 
 from core.models import ChatMessage
 from core.database import SessionLocal, ChatMessage as DbChatMessage, Session as DbSession
@@ -13,6 +14,13 @@ from src.topic_analyzer import analyze_topics
 from routes.session_routes import _verify_session_owner
 
 logger = logging.getLogger(__name__)
+
+
+def history_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one history route. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def setup_history_routes(session_manager) -> APIRouter:
@@ -106,9 +114,11 @@ def setup_history_routes(session_manager) -> APIRouter:
             return {"status": "ok", "kept": keep_count, "truncated": result}
         except KeyError:
             raise HTTPException(404, "Session not found")
-        except Exception as e:
-            logger.error(f"Truncate error {session_id}: {e}")
-            raise HTTPException(500, str(e))
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Session truncate failed for %s", session_id)
+            return history_error("Failed to truncate session")
 
     @router.post("/api/session/{session_id}/message")
     async def add_message(request: Request, session_id: str):
