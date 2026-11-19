@@ -6,6 +6,7 @@ import logging
 from typing import Dict, Any
 
 from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import JSONResponse
 
 from core.models import ChatMessage
 from core.database import SessionLocal, ChatMessage as DbChatMessage, Session as DbSession
@@ -13,6 +14,13 @@ from src.topic_analyzer import analyze_topics
 from routes.session_routes import _verify_session_owner
 
 logger = logging.getLogger(__name__)
+
+
+def history_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one history route. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def setup_history_routes(session_manager) -> APIRouter:
@@ -478,9 +486,9 @@ def setup_history_routes(session_manager) -> APIRouter:
             }
         except HTTPException:
             raise
-        except Exception as e:
-            logger.error(f"Fork error {session_id}: {e}")
-            raise HTTPException(500, str(e))
+        except Exception:
+            logger.exception("Session fork failed for %s", session_id)
+            return history_error("Failed to fork session")
 
     @router.get("/api/conversations/topics")
     async def get_conversation_topics(request: Request) -> Dict[str, Any]:
