@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from src.endpoint_resolver import resolve_endpoint
 from src.auth_helpers import _auth_disabled, get_current_user
@@ -46,6 +46,13 @@ def _resolve_research_endpoint(sess) -> tuple:
         fallback_headers=sess.headers,
     )
     return url, model, headers
+
+
+def research_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one research route. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
@@ -157,9 +164,11 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
         logger.info(f"Visual report requested for session {session_id}")
         try:
             html_content = research_handler.get_report_html(session_id)
-        except Exception as e:
-            logger.error(f"Visual report generation error: {e}", exc_info=True)
-            raise HTTPException(500, f"Report generation failed: {e}")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Visual report generation failed for %s", session_id)
+            return research_error("Failed to generate report")
         if html_content is None:
             logger.warning(f"No report data found for session {session_id}")
             raise HTTPException(404, "No visual report available for this session")
