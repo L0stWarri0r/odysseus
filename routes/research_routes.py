@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from src.endpoint_resolver import resolve_endpoint
 from src.auth_helpers import _auth_disabled, get_current_user
@@ -46,6 +46,13 @@ def _resolve_research_endpoint(sess) -> tuple:
         fallback_headers=sess.headers,
     )
     return url, model, headers
+
+
+def research_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one research route. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
@@ -279,8 +286,9 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
             path.write_text(json.dumps(data), encoding="utf-8")
         except HTTPException:
             raise
-        except Exception as e:
-            raise HTTPException(500, f"Failed to update research: {e}")
+        except Exception:
+            logger.exception("Research archive update failed for %s", session_id)
+            return research_error("Failed to update research")
         return {"ok": True, "id": session_id, "archived": bool(archived)}
 
     @router.delete("/api/research/{session_id}")
