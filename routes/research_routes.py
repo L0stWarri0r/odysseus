@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from src.endpoint_resolver import resolve_endpoint
 from src.auth_helpers import _auth_disabled, get_current_user
@@ -46,6 +46,13 @@ def _resolve_research_endpoint(sess) -> tuple:
         fallback_headers=sess.headers,
     )
     return url, model, headers
+
+
+def research_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one research route. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
@@ -471,15 +478,21 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
         result = research_handler.get_result(session_id)
         if result is None:
             p = Path("data/deep_research") / f"{session_id}.json"
-            if p.exists():
+            if not p.exists():
+                raise HTTPException(404, "No research result available")
+            try:
                 d = json.loads(p.read_text(encoding="utf-8"))
-                return {
-                    "result": d.get("result", ""),
-                    "sources": d.get("sources", []),
-                    "raw_findings": d.get("raw_findings", []),
-                    "category": d.get("category") or "",
-                }
-            raise HTTPException(404, "No research result available")
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("Research result peek failed for %s", session_id)
+                return research_error("Failed to read research result")
+            return {
+                "result": d.get("result", ""),
+                "sources": d.get("sources", []),
+                "raw_findings": d.get("raw_findings", []),
+                "category": d.get("category") or "",
+            }
         sources = research_handler.get_sources(session_id) or []
         raw_findings = research_handler.get_raw_findings(session_id) or []
         return {"result": result, "sources": sources, "raw_findings": raw_findings, "category": ""}
