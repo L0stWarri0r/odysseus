@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
@@ -19,6 +20,13 @@ from routes.gallery_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def gallery_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one gallery route. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def _sanitize_gallery_filename(filename: str) -> str:
@@ -148,9 +156,13 @@ def setup_gallery_routes() -> APIRouter:
                 pass
             try:
                 db.commit()
-            except Exception as e:
+            except HTTPException:
                 db.rollback()
-                raise HTTPException(500, f"DB commit failed: {e}")
+                raise
+            except Exception:
+                db.rollback()
+                logger.exception("Gallery replace failed for %s", image_id)
+                return gallery_error("Failed to replace image")
             return {"ok": True, "width": img.width, "height": img.height}
         finally:
             db.close()
