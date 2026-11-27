@@ -1,5 +1,6 @@
 # routes/memory_routes.py
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, File
+from fastapi.responses import JSONResponse
 from typing import Dict, Any, Optional, List
 import json
 import os
@@ -20,6 +21,14 @@ def _strip_list_prefix(text: str) -> str:
     if not text:
         return text
     return _LIST_PREFIX_RE.sub("", text, count=1).strip()
+
+
+def memory_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one memory route. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
+
 
 from services.memory import MemoryManager
 from core.session_manager import SessionManager
@@ -458,9 +467,11 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
             # numbering the model added so saved memories don't keep the prefix.
             lines = [_strip_list_prefix(l.strip()) for l in raw.splitlines() if l.strip() and len(l.strip()) > 5]
             return {"suggestions": [{"text": l, "category": "fact"} for l in lines[:20]], "filename": filename}
-        except Exception as e:
-            logger.error(f"Memory import extraction failed: {e}")
-            raise HTTPException(502, f"LLM extraction failed: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Memory import extraction failed for %s", filename)
+            return memory_error("Failed to extract memories")
 
     @router.post("/{memory_id}/pin")
     def pin_memory(request: Request, memory_id: str, pinned: bool = Form(True)):
