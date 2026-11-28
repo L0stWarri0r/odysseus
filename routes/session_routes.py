@@ -5,6 +5,7 @@ import json
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Form, HTTPException, Response, Request
+from fastapi.responses import JSONResponse
 import logging
 
 from core.session_manager import SessionManager
@@ -19,6 +20,13 @@ def _sanitize_export_filename(name: str) -> str:
     name = name if isinstance(name, str) else ""
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
     return name[:128]
+
+
+def session_error(message: str, status_code: int = 502, **extra):
+    """JSON error for one session route. Exception text stays in the log."""
+    payload = {"error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def _verify_session_owner(request: Request, session_id: str, session_manager=None):
@@ -1105,9 +1113,9 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
                 raise HTTPException(502, "AI returned invalid JSON for auto-sort — the model may not follow JSON instructions; try a different utility model in Settings.")
         except HTTPException:
             raise
-        except Exception as e:
-            logger.error(f"Auto-sort LLM call failed: {e}")
-            raise HTTPException(502, f"Auto-sort failed: {str(e)}")
+        except Exception:
+            logger.exception("Auto-sort LLM call failed")
+            return session_error("Failed to sort sessions")
 
         folders = result.get("folders", {})
         if not folders:
